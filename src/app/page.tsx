@@ -94,8 +94,24 @@ export default async function DashboardPage() {
     const juros = Number(emp.taxa_juros);
     const totalDevido = principal * (1 + juros / 100);
 
-    totalEmprestado += principal;
-    totalAReceber += totalDevido;
+    let valorEmAberto = totalDevido;
+    let principalEmAberto = principal;
+
+    if (emp.parcelas && emp.parcelas.length > 0) {
+      valorEmAberto = emp.parcelas
+        .filter((p) => p.status === "aberto")
+        .reduce((acc, p) => acc + Number(p.valor), 0);
+
+      if (emp.tipo_pagamento === "parcelado" || emp.tipo_pagamento === "parcela_juros_mes") {
+        const totalContrato = emp.parcelas.reduce((acc, p) => acc + Number(p.valor), 0);
+        principalEmAberto = totalContrato > 0 ? principal * (valorEmAberto / totalContrato) : 0;
+      } else {
+        principalEmAberto = juros > 0 ? valorEmAberto / (1 + juros / 100) : valorEmAberto;
+      }
+    }
+
+    totalEmprestado += principalEmAberto;
+    totalAReceber += valorEmAberto;
 
     const vencObj = new Date(emp.data_vencimento);
     const vencimentoUTC = new Date(Date.UTC(vencObj.getUTCFullYear(), vencObj.getUTCMonth(), vencObj.getUTCDate()));
