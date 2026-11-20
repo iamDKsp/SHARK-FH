@@ -60,13 +60,13 @@ function addDaysIso(iso: string, days: number): string {
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
 }
 
-function getMonthBounds(iso: string, offsetMonths = 0): { start: string; end: string } {
+function getMonthBounds(iso: string, offsetMonths = 0): { inicio: string; fim: string } {
   const [y, m] = iso.split("-").map(Number);
   const first = new Date(Date.UTC(y, m - 1 + offsetMonths, 1));
   const last = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0));
   const fmt = (dt: Date) =>
     `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
-  return { start: fmt(first), end: fmt(last) };
+  return { inicio: fmt(first), fim: fmt(last) };
 }
 
 export default function FaturamentoView({
@@ -99,7 +99,7 @@ export default function FaturamentoView({
 
   // Recebido no mês atual (para comparar com o potencial mensal no card superior)
   const recebidoMesAtual = useMemo(() => {
-    const { start, end } = getMonthBounds(hojeStr, 0);
+    const { inicio: start, fim: end } = getMonthBounds(hojeStr, 0);
     let total = 0;
     let renovacoes = 0;
     let diarias = 0;
