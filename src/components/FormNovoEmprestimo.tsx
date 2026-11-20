@@ -7,11 +7,15 @@ import { useState, useEffect, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import SearchableSelect from "@/components/SearchableSelect";
 import AtrasoField from "@/components/AtrasoField";
+import { generateUuid, useOffline } from "@/components/offline/OfflineProvider";
+import type { TipoAtraso } from "@/lib/jurosAtraso";
 
 interface Cliente {
   id: string;
   nome: string;
+  rawNome?: string;
   telefone: string;
+  pendingSync?: boolean;
 }
 
 interface Parceiro {
@@ -48,6 +52,7 @@ const addMonthsCapped = (date: Date, months: number) => {
 export default function FormNovoEmprestimo({ clientes, parceiros, clienteIdParam }: FormNovoEmprestimoProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+  const { isOnline, enqueueOfflineAction } = useOffline();
 
   // Overlay Animado States
   const [showOverlay, setShowOverlay] = useState(false);
@@ -230,59 +235,55 @@ export default function FormNovoEmprestimo({ clientes, parceiros, clienteIdParam
     setShowOverlay(true);
     setOverlayStep(1); // Processando e calculando parcelas
 
+    const cli = clientes.find((c) => c.id === clienteId);
+    const parc = parceiros.find((p) => p.id === parceiroId);
+    const atrasoTipoBruto = String(formData.get("atrasoTipo") ?? "nenhum");
+    const atrasoTipo: TipoAtraso =
+      atrasoTipoBruto === "fixo_dia" || atrasoTipoBruto === "percentual_dia"
+        ? atrasoTipoBruto
+        : "nenhum";
+    const atrasoValorNum = Number(String(formData.get("atrasoValor") ?? "0").replace(",", "."));
+    const atrasoValor = Number.isFinite(atrasoValorNum) && atrasoValorNum > 0 ? atrasoValorNum : 0;
+
     startTransition(async () => {
       try {
-        const res = await createEmprestimo(formData);
-        if (res && res.success && res.redirectUrl) {
-          setOverlayStep(2); // Sucesso
-          // Envio do PDF via WhatsApp — feito no cliente (jspdf não funciona no servidor)
-          if (avisarNoWhats && res.clienteTelefone) {
-            setOverlayStep(3);
-            try {
-              const { obterCronogramaPdfBase64 } = await import("@/lib/cronogramaPdf");
-              const pdfBase64 = obterCronogramaPdfBase64({
-                clienteNome: res.clienteNome,
-                tipoPagamento: res.tipoPagamento,
-                valorEmprestado: res.valorEmprestado,
-                taxaJuros: res.taxaJuros,
-                taxaMulta: res.taxaMulta,
-                atrasoTipo: res.atrasoTipo,
-                atrasoValor: res.atrasoValor,
-                observacoes: res.observacoes,
-                parcelas: res.parcelas.map((p: any) => ({
-                  numero: p.numero,
-                  valor: p.valor,
-                  data_vencimento: p.data_vencimento,
-                  status: "aberto",
-                })),
-              });
-              const fileName = `cronograma-${res.clienteNome.toLowerCase().replace(/[^a-z0-9]/g, "-")}.pdf`;
-              const envio = await fetch("/api/whatsapp/send", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  messages: [{
-                    phone: res.clienteTelefone,
-                    document: pdfBase64,
-                    mimetype: "application/pdf",
-                    fileName,
-                    caption: res.legendaPdf || "Contratação realizada com sucesso!",
-                  }],
-                }),
-              });
-              if (!envio.ok) {
-                const d = await envio.json().catch(() => ({}));
-                alert(`Empréstimo criado, mas o PDF não foi enviado: ${d.error || "verifique se o WhatsApp está conectado."}`);
-              }
-            } catch (pdfErr) {
-              console.error("Erro ao enviar PDF via WhatsApp:", pdfErr);
-              // Não bloqueia o redirect — PDF é opcional
-            }
-          }
-          router.push(res.redirectUrl);
+        const entityId = generateUuid();
+        const clienteNomeReal = cli?.rawNome || cli?.nome || "Cliente";
+
+        const res = await enqueueOfflineAction(
+          {
+            type: "CREATE_EMPRESTIMO",
+            entityId,
+            dependsOnEntityId: cli?.pendingSync ? cli.id : undefined,
+            label: `Novo empréstimo: ${formatBRL(valor)} — ${clienteNomeReal}`,
+            payload: {
+              clienteId,
+              clienteNome: clienteNomeReal,
+              clienteTelefone: cli?.telefone || "",
+              parceiroId: parceiroId || null,
+              parceiroNome: parc?.nome || null,
+              valorEmprestado: valor,
+              tipoPagamento,
+              frequencia,
+              taxaJuros: tipoPagamento === "a_vista" ? 0 : taxaJuros,
+              atrasoTipo,
+              atrasoValor,
+              dataInicio,
+              dataVencimento: dataVencimentoFinal,
+              categoria: categoria || "Sem categoria",
+              observacoes: observacoes || null,
+              parcelas: parcelasFinais,
+              enviarPdfWhatsapp: avisarNoWhats,
+            },
+          },
+          { tryImmediateSync: true }
+        );
+
+        setOverlayStep(2); // Sucesso
+        if (res.syncedImmediately) {
+          router.push(`/emprestimos/${entityId}`);
         } else {
-          alert("Erro ao criar empréstimo.");
-          setShowOverlay(false);
+          router.push(`/offline/emprestimo?id=${encodeURIComponent(entityId)}`);
         }
       } catch (err) {
         console.error("Erro ao salvar empréstimo:", err);
@@ -852,8 +853,17 @@ export default function FormNovoEmprestimo({ clientes, parceiros, clienteIdParam
                 </div>
 
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Escolha se deseja enviar a confirmação e o cronograma em PDF para o WhatsApp de{" "}
-                  <strong className="text-slate-900">{cli?.nome || "cliente"}</strong> agora:
+                  {isOnline ? (
+                    <>
+                      Escolha se deseja enviar a confirmação e o cronograma em PDF para o WhatsApp de{" "}
+                      <strong className="text-slate-900">{cli?.rawNome || cli?.nome || "cliente"}</strong> agora:
+                    </>
+                  ) : (
+                    <>
+                      Você está <strong>offline</strong>. O empréstimo será salvo no aparelho e, se você
+                      escolher avisar no WhatsApp, o PDF será disparado <strong>automaticamente assim que a internet voltar</strong>:
+                    </>
+                  )}
                 </p>
 
                 <div className="flex flex-col gap-2.5 pt-1">
@@ -864,7 +874,11 @@ export default function FormNovoEmprestimo({ clientes, parceiros, clienteIdParam
                     className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-black rounded-xl transition-all flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 active:scale-[0.98] cursor-pointer disabled:opacity-50"
                   >
                     <MessageSquare className="w-4 h-4" />
-                    <span>Sim, Criar e Avisar no WhatsApp</span>
+                    <span>
+                      {isOnline
+                        ? "Sim, Criar e Avisar no WhatsApp"
+                        : "Sim, Salvar e Disparar PDF ao Reconectar"}
+                    </span>
                   </button>
 
                   <button

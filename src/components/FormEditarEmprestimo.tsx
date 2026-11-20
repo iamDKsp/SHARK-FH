@@ -7,6 +7,8 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import SearchableSelect from "@/components/SearchableSelect";
 import AtrasoField from "@/components/AtrasoField";
+import { isNetworkError, useOffline } from "@/components/offline/OfflineProvider";
+import type { TipoAtraso } from "@/lib/jurosAtraso";
 
 interface Cliente  { id: string; nome: string; telefone: string; }
 interface Parceiro { id: string; nome: string; }
@@ -39,6 +41,7 @@ const addMonthsCapped = (date: Date, months: number) => {
 export default function FormEditarEmprestimo({ emprestimo, clientes, parceiros }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+  const { isOnline, enqueueOfflineAction } = useOffline();
   const [showOverlay, setShowOverlay] = useState(false);
   const [overlayStep, setOverlayStep] = useState(0);
   const [clienteId, setClienteId] = useState(emprestimo.cliente_id);
@@ -96,7 +99,47 @@ export default function FormEditarEmprestimo({ emprestimo, clientes, parceiros }
     setShowOverlay(true);
     setOverlayStep(1);
 
+    const atrasoTipoBruto = String(formData.get("atrasoTipo") ?? "nenhum");
+    const atrasoTipo: TipoAtraso =
+      atrasoTipoBruto === "fixo_dia" || atrasoTipoBruto === "percentual_dia"
+        ? atrasoTipoBruto
+        : "nenhum";
+    const atrasoValorNum = Number(String(formData.get("atrasoValor") ?? "0").replace(",", "."));
+    const atrasoValor = Number.isFinite(atrasoValorNum) && atrasoValorNum > 0 ? atrasoValorNum : 0;
+    const cliNome = clientes.find((c) => c.id === clienteId)?.nome || "Cliente";
+
+    const enqueueEdit = async () => {
+      await enqueueOfflineAction({
+        type: "UPDATE_EMPRESTIMO",
+        entityId: emprestimo.id,
+        label: `Editar empréstimo — ${cliNome}`,
+        payload: {
+          emprestimoId: emprestimo.id,
+          clienteId,
+          parceiroId: parceiroId || null,
+          valorEmprestado: valor,
+          tipoPagamento,
+          frequencia,
+          taxaJuros: tipoPagamento === "a_vista" ? 0 : taxaJuros,
+          atrasoTipo,
+          atrasoValor,
+          dataInicio,
+          dataVencimento: dataVencimentoFinal,
+          categoria,
+          observacoes: observacoes || null,
+          recriarParcelas,
+          parcelas: recriarParcelas ? parcelasSimuladas : [],
+        },
+      });
+      setOverlayStep(2);
+      router.push(`/offline/emprestimo?id=${encodeURIComponent(emprestimo.id)}`);
+    };
+
     startTransition(async () => {
+      if (!isOnline) {
+        await enqueueEdit();
+        return;
+      }
       try {
         const res = await updateEmprestimo(emprestimo.id, formData);
         if (res?.success && res.redirectUrl) {
@@ -109,7 +152,11 @@ export default function FormEditarEmprestimo({ emprestimo, clientes, parceiros }
           alert("Erro ao salvar.");
           setShowOverlay(false);
         }
-      } catch {
+      } catch (err) {
+        if (isNetworkError(err)) {
+          await enqueueEdit();
+          return;
+        }
         alert("Erro ao salvar.");
         setShowOverlay(false);
       }

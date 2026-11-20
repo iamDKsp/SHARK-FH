@@ -2,6 +2,10 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import Navbar from "@/components/Navbar";
+import { OfflineProvider } from "@/components/offline/OfflineProvider";
+import IosInstallHint from "@/components/offline/IosInstallHint";
+import PendingSyncBanner from "@/components/offline/PendingSyncBanner";
+import PendingQueueModal from "@/components/offline/PendingQueueModal";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -88,10 +92,15 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-slate-50 antialiased overflow-x-clip">
-        <Navbar />
-        <main className="flex-grow w-full max-w-7xl 2xl:max-w-[1600px] 3xl:max-w-[1880px] mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8 pb-24 md:pb-8">
-          {children}
-        </main>
+        <OfflineProvider>
+          <IosInstallHint />
+          <Navbar />
+          <PendingSyncBanner />
+          <main className="flex-grow w-full max-w-7xl 2xl:max-w-[1600px] 3xl:max-w-[1880px] mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8 pb-24 md:pb-8">
+            {children}
+          </main>
+          <PendingQueueModal />
+        </OfflineProvider>
       </body>
     </html>
   );

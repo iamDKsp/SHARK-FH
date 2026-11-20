@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { X, Upload, Camera, Paperclip, Loader2 } from "lucide-react";
 import { createCheque } from "@/app/cheques/actions";
+import { generateUuid, useOffline } from "@/components/offline/OfflineProvider";
 
 interface ModalCadastrarChequeProps {
   isOpen: boolean;
@@ -12,6 +13,7 @@ interface ModalCadastrarChequeProps {
 }
 
 export default function ModalCadastrarCheque({ isOpen, onClose, clientes, parceiros }: ModalCadastrarChequeProps) {
+  const { enqueueOfflineAction } = useOffline();
   const [selectedCliente, setSelectedCliente] = useState("");
   const [telefone, setTelefone] = useState("");
   const [selectedParceiro, setSelectedParceiro] = useState("");
@@ -103,19 +105,38 @@ export default function ModalCadastrarCheque({ isOpen, onClose, clientes, parcei
       alert("Preencha todos os campos obrigatórios (*).");
       return;
     }
-    
+
+    const cli = clientes.find((c) => c.id === selectedCliente);
+    const parc = parceiros.find((p) => p.id === selectedParceiro);
+    const valorNum = parseFloat(valor);
+    const formatBRL = (v: number) =>
+      new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(v);
+
     setIsLoading(true);
     try {
-      await createCheque({
-        cliente_id: selectedCliente,
-        parceiro_id: selectedParceiro || undefined,
-        valor: parseFloat(valor),
-        taxa_desconto: parseFloat(taxa || "0"),
-        valor_liquido: parseFloat(valorLiquido || valor),
-        data_compensacao: dataVencimento,
-        observacoes,
-        foto_url: fotoBase64 || undefined
-      });
+      const entityId = generateUuid();
+      await enqueueOfflineAction(
+        {
+          type: "CREATE_CHEQUE",
+          entityId,
+          dependsOnEntityId: cli?.pendingSync ? cli.id : undefined,
+          label: `Novo cheque: ${formatBRL(valorNum)} — ${cli?.nome || "Cliente"}`,
+          payload: {
+            cliente_id: selectedCliente,
+            clienteNome: cli?.nome || "Cliente",
+            clienteTelefone: cli?.telefone || "",
+            parceiro_id: selectedParceiro || null,
+            parceiroNome: parc?.nome || null,
+            valor: valorNum,
+            taxa_desconto: parseFloat(taxa || "0"),
+            valor_liquido: parseFloat(valorLiquido || valor),
+            data_compensacao: dataVencimento,
+            observacoes: observacoes || null,
+            foto_url: fotoBase64 || null,
+          },
+        },
+        { tryImmediateSync: true }
+      );
       onClose();
       // Reset form
       setSelectedCliente("");

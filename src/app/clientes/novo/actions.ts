@@ -1,10 +1,7 @@
 "use server";
 
-import { prisma } from "@/lib/db";
-import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import * as fs from "fs/promises";
-import * as path from "path";
+import { criarClienteNoBanco } from "@/lib/services/clienteService";
 
 export async function createCliente(formData: FormData) {
   const nome = formData.get("nome") as string;
@@ -17,28 +14,22 @@ export async function createCliente(formData: FormData) {
   const email = formData.get("email") as string;
   const observacoes = formData.get("observacoes") as string;
   const blacklist = formData.get("blacklist") === "true";
-
-  // 1. Processar Foto de Perfil (Base64)
   const fotoUrl = formData.get("fotoBase64") as string | null;
-
-  // 2. Processar Documentos (Base64)
   const documentosUrlsStr = formData.get("documentosBase64") as string | null;
 
-  await prisma.cliente.create({
-    data: {
-      nome: nome.trim(),
-      telefone: telefone.replace(/\D/g, ""), // Apenas números
-      cidade: cidade || "Bauru",
-      documento: documento || "",
-      endereco: endereco || null,
-      referencia: referencia || null,
-      quem_indicou: quemIndicou || null,
-      email: email || null,
-      observacoes: observacoes || null,
-      blacklist: blacklist,
-      foto_url: fotoUrl,
-      documentos_urls: documentosUrlsStr,
-    },
+  await criarClienteNoBanco({
+    nome,
+    telefone,
+    cidade,
+    documento,
+    endereco,
+    referencia,
+    quemIndicou,
+    email,
+    observacoes,
+    blacklist,
+    fotoBase64: fotoUrl,
+    documentosBase64: documentosUrlsStr,
   });
 
   revalidatePath("/clientes");

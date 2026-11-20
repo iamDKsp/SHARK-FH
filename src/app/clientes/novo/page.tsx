@@ -13,10 +13,12 @@ import {
 } from "lucide-react";
 import { useState, useRef, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { generateUuid, useOffline } from "@/components/offline/OfflineProvider";
 
 export default function NovoClientePage() {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+  const { enqueueOfflineAction } = useOffline();
 
   // Foto de Perfil
   const [fotoPreview, setFotoPreview] = useState<string | null>(null);
@@ -209,24 +211,46 @@ export default function NovoClientePage() {
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
-    
-    if (fotoBase64) {
-      formData.set("fotoBase64", fotoBase64);
-    }
 
-    if (novosDocumentos.length > 0) {
-      const docsBase64 = novosDocumentos.map(d => d.base64);
-      formData.set("documentosBase64", JSON.stringify(docsBase64));
-    }
+    const nome = String(formData.get("nome") || "").trim();
+    const telefone = String(formData.get("telefone") || "");
+    const cidade = String(formData.get("cidade") || "Bauru");
+    const documento = String(formData.get("documento") || "");
+    const endereco = String(formData.get("endereco") || "") || null;
+    const referencia = String(formData.get("referencia") || "") || null;
+    const quemIndicou = String(formData.get("quemIndicou") || "") || null;
+    const email = String(formData.get("email") || "") || null;
+    const observacoes = String(formData.get("observacoes") || "") || null;
+    const blacklist = formData.get("blacklist") === "true";
+    const documentosBase64 =
+      novosDocumentos.length > 0 ? JSON.stringify(novosDocumentos.map((d) => d.base64)) : null;
 
     startTransition(async () => {
       try {
-        const res = await createCliente(formData);
-        if (res && res.success && res.redirectUrl) {
-          router.push(res.redirectUrl);
-        } else {
-          alert("Erro ao salvar cliente.");
-        }
+        const entityId = generateUuid();
+        await enqueueOfflineAction(
+          {
+            type: "CREATE_CLIENTE",
+            entityId,
+            label: `Novo cliente: ${nome}`,
+            payload: {
+              nome,
+              telefone,
+              cidade,
+              documento,
+              endereco,
+              referencia,
+              quemIndicou,
+              email,
+              observacoes,
+              blacklist,
+              fotoBase64: fotoBase64 || null,
+              documentosBase64,
+            },
+          },
+          { tryImmediateSync: true }
+        );
+        router.push("/clientes");
       } catch (err) {
         console.error("Erro ao salvar cliente:", err);
         alert("Erro ao salvar cliente.");

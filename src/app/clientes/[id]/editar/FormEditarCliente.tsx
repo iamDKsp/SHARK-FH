@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useState, useRef, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { isNetworkError, useOffline } from "@/components/offline/OfflineProvider";
 
 interface Cliente {
   id: string;
@@ -37,6 +38,7 @@ interface FormEditarClienteProps {
 export default function FormEditarCliente({ cliente }: FormEditarClienteProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+  const { isOnline, enqueueOfflineAction } = useOffline();
 
   // Foto de Perfil
   const [fotoPreview, setFotoPreview] = useState<string | null>(cliente.foto_url);
@@ -264,7 +266,39 @@ export default function FormEditarCliente({ cliente }: FormEditarClienteProps) {
       formData.set("documentosBase64", JSON.stringify(docsBase64));
     }
 
+    const nome = String(formData.get("nome") || cliente.nome).trim();
+    const enqueueEdit = async () => {
+      await enqueueOfflineAction({
+        type: "UPDATE_CLIENTE",
+        entityId: cliente.id,
+        label: `Editar cliente — ${nome}`,
+        payload: {
+          id: cliente.id,
+          nome,
+          telefone: String(formData.get("telefone") || ""),
+          cidade: String(formData.get("cidade") || "Bauru"),
+          documento: String(formData.get("documento") || ""),
+          endereco: String(formData.get("endereco") || "") || null,
+          referencia: String(formData.get("referencia") || "") || null,
+          quemIndicou: String(formData.get("quemIndicou") || "") || null,
+          email: String(formData.get("email") || "") || null,
+          observacoes: String(formData.get("observacoes") || "") || null,
+          blacklist: formData.get("blacklist") === "true",
+          removeFoto,
+          documentosMantidos: JSON.stringify(documentosMantidos),
+          fotoBase64: fotoBase64 || null,
+          documentosBase64:
+            novosDocumentos.length > 0 ? JSON.stringify(novosDocumentos.map((d) => d.base64)) : null,
+        },
+      });
+      router.push(`/offline/cliente?id=${encodeURIComponent(cliente.id)}`);
+    };
+
     startTransition(async () => {
+      if (!isOnline) {
+        await enqueueEdit();
+        return;
+      }
       try {
         const res = await updateCliente(formData);
         if (res && res.success && res.redirectUrl) {
@@ -273,6 +307,10 @@ export default function FormEditarCliente({ cliente }: FormEditarClienteProps) {
           alert("Erro ao salvar alterações.");
         }
       } catch (err) {
+        if (isNetworkError(err)) {
+          await enqueueEdit();
+          return;
+        }
         console.error("Erro ao atualizar cliente:", err);
         alert("Erro ao salvar alterações.");
       }

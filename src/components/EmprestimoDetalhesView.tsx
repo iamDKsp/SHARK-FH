@@ -23,6 +23,7 @@ import { enviarMensagemManual, legendaCronograma, listarRespostasRapidas } from 
 import { hojeEmBrasilia } from "@/lib/dateUtils";
 import { calcularJurosAtraso, descreverRegraAtraso, regraAtiva } from "@/lib/jurosAtraso";
 import { baixarCronogramaPdfCliente, obterCronogramaPdfBase64 } from "@/lib/cronogramaPdf";
+import { isNetworkError, useOffline } from "@/components/offline/OfflineProvider";
 
 interface Cliente { id: string; nome: string; telefone: string; blacklist: boolean; foto_url: string | null; }
 interface Parcela { id: string; numero: number; valor: number; data_vencimento: any; status: string; data_pagamento: any; }
@@ -91,13 +92,15 @@ export default function EmprestimoDetalhesView({
   modoCarencia = false,
   modoCarencia10 = false,
 }: { 
-  emprestimo: Emprestimo;
+  emprestimo: Emprestimo & { pendingSync?: boolean };
   perguntarWhatsappRenovacao?: boolean;
   modoCarencia?: boolean;
   modoCarencia10?: boolean;
 }) {
   const router = useRouter();
+  const { isOnline, enqueueOfflineAction } = useOffline();
   const [isPending, startTransition] = useTransition();
+  const isOfflineEmp = !isOnline || Boolean((emprestimo as { pendingSync?: boolean }).pendingSync);
   const [modal, setModal] = useState<null | "renegociar" | "reprogramar" | "delete" | "wa" | "renovar_juros">(null);
   const [modalClosing, setModalClosing] = useState(false);
 
@@ -134,11 +137,29 @@ export default function EmprestimoDetalhesView({
   const handleSalvarDataPrevista = async () => {
     if (!dataPrevistaInput) return;
     setIsSavingData(true);
-    try {
-      await salvarDataPrevistaPagamento(emprestimo.id, dataPrevistaInput);
+    const enqueue = async () => {
+      await enqueueOfflineAction({
+        type: "SALVAR_DATA_PREVISTA",
+        entityId: emprestimo.id,
+        dependsOnEntityId: emprestimo.pendingSync ? emprestimo.id : undefined,
+        label: `Data prevista (${dataPrevistaInput}) — ${emprestimo.cliente.nome}`,
+        payload: { emprestimoId: emprestimo.id, data: dataPrevistaInput },
+      });
       setShowDatePicker(false);
+    };
+    try {
+      if (isOfflineEmp) {
+        await enqueue();
+      } else {
+        await salvarDataPrevistaPagamento(emprestimo.id, dataPrevistaInput);
+        setShowDatePicker(false);
+      }
     } catch (err: any) {
-      alert(err.message);
+      if (isNetworkError(err)) {
+        await enqueue();
+      } else {
+        alert(err.message);
+      }
     }
     setIsSavingData(false);
   };
@@ -146,12 +167,31 @@ export default function EmprestimoDetalhesView({
   const handleLimparDataPrevista = async () => {
     if (!confirm("Remover data prevista de pagamento?")) return;
     setIsSavingData(true);
-    try {
-      await salvarDataPrevistaPagamento(emprestimo.id, null);
+    const enqueue = async () => {
+      await enqueueOfflineAction({
+        type: "SALVAR_DATA_PREVISTA",
+        entityId: emprestimo.id,
+        dependsOnEntityId: emprestimo.pendingSync ? emprestimo.id : undefined,
+        label: `Remover data prevista — ${emprestimo.cliente.nome}`,
+        payload: { emprestimoId: emprestimo.id, data: null },
+      });
       setDataPrevistaInput("");
       setShowDatePicker(false);
+    };
+    try {
+      if (isOfflineEmp) {
+        await enqueue();
+      } else {
+        await salvarDataPrevistaPagamento(emprestimo.id, null);
+        setDataPrevistaInput("");
+        setShowDatePicker(false);
+      }
     } catch (err: any) {
-      alert(err.message);
+      if (isNetworkError(err)) {
+        await enqueue();
+      } else {
+        alert(err.message);
+      }
     }
     setIsSavingData(false);
   };
@@ -384,8 +424,26 @@ export default function EmprestimoDetalhesView({
     if (!dec.ok) return;
     
     const enviarWa = confirm("Deseja enviar notificação pelo WhatsApp?");
+    const enqueue = async () => {
+      await enqueueOfflineAction({
+        type: "PAY_NEXT_INSTALLMENT",
+        entityId: emprestimo.id,
+        dependsOnEntityId: emprestimo.pendingSync ? emprestimo.id : undefined,
+        label: `${isAVista || !multiplas ? "Quitar" : `Pagar parcela #${proximaParcelaAberta?.numero || ""}`} — ${emprestimo.cliente.nome}`,
+        payload: {
+          emprestimoId: emprestimo.id,
+          withDelay,
+          cobrarJurosAtraso: dec.cobrar,
+          enviarWhatsapp: enviarWa,
+        },
+      });
+    };
     
     startTransition(async () => {
+      if (isOfflineEmp) {
+        await enqueue();
+        return;
+      }
       try {
         const res = await payNextInstallment(emprestimo.id, withDelay, dec.cobrar, enviarWa);
         if (res?.whatsappEnviado) {
@@ -396,6 +454,10 @@ export default function EmprestimoDetalhesView({
           alert("Pagamento confirmado com sucesso!");
         }
       } catch (err: any) {
+        if (isNetworkError(err)) {
+          await enqueue();
+          return;
+        }
         alert(err?.message || "Erro ao registrar pagamento.");
       }
     });
@@ -408,8 +470,26 @@ export default function EmprestimoDetalhesView({
     if (!dec.ok) return;
     
     const enviarWa = confirm("Deseja enviar notificação pelo WhatsApp?");
+    const enqueue = async () => {
+      await enqueueOfflineAction({
+        type: "PAY_FULL_LOAN",
+        entityId: emprestimo.id,
+        dependsOnEntityId: emprestimo.pendingSync ? emprestimo.id : undefined,
+        label: `Quitar empréstimo — ${emprestimo.cliente.nome}`,
+        payload: {
+          emprestimoId: emprestimo.id,
+          withDelay,
+          cobrarJurosAtraso: dec.cobrar,
+          enviarWhatsapp: enviarWa,
+        },
+      });
+    };
 
     startTransition(async () => {
+      if (isOfflineEmp) {
+        await enqueue();
+        return;
+      }
       try {
         const res = await payFullLoan(emprestimo.id, withDelay, dec.cobrar, enviarWa);
         if (res?.whatsappEnviado) {
@@ -420,6 +500,10 @@ export default function EmprestimoDetalhesView({
           alert("Quitação confirmada com sucesso!");
         }
       } catch (err: any) {
+        if (isNetworkError(err)) {
+          await enqueue();
+          return;
+        }
         alert(err?.message || "Erro ao registrar quitação.");
       }
     });
@@ -433,8 +517,28 @@ export default function EmprestimoDetalhesView({
     if (!dec.ok) return;
     
     const enviarWa = confirm("Deseja enviar notificação pelo WhatsApp?");
+    const enqueue = async () => {
+      await enqueueOfflineAction({
+        type: "PAY_INSTALLMENT_BY_ID",
+        entityId: emprestimo.id,
+        dependsOnEntityId: emprestimo.pendingSync ? emprestimo.id : undefined,
+        label: `Pagar parcela #${parcelaNumero} — ${emprestimo.cliente.nome}`,
+        payload: {
+          emprestimoId: emprestimo.id,
+          parcelaId,
+          numeroParcela: parcelaNumero,
+          withDelay,
+          cobrarJurosAtraso: dec.cobrar,
+          enviarWhatsapp: enviarWa,
+        },
+      });
+    };
     
     startTransition(async () => {
+      if (isOfflineEmp) {
+        await enqueue();
+        return;
+      }
       try {
         const res = await payInstallmentById(parcelaId, withDelay, dec.cobrar, enviarWa);
         if (res?.whatsappEnviado) {
@@ -445,18 +549,70 @@ export default function EmprestimoDetalhesView({
           alert(`Pagamento da Parcela ${parcelaNumero} confirmado com sucesso!`);
         }
       } catch (err: any) {
+        if (isNetworkError(err)) {
+          await enqueue();
+          return;
+        }
         alert(err?.message || "Erro ao registrar pagamento.");
       }
     });
   };
   const toggleBL = () => {
     if (!confirm(emprestimo.cliente.blacklist ? "Remover da lista negra?" : "Marcar como LISTA NEGRA?")) return;
-    startTransition(async () => { await toggleClientBlacklist(emprestimo.cliente.id, emprestimo.cliente.blacklist, emprestimo.id); });
+    const enqueue = async () => {
+      await enqueueOfflineAction({
+        type: "TOGGLE_CLIENT_BLACKLIST",
+        entityId: emprestimo.cliente.id,
+        label: `${emprestimo.cliente.blacklist ? "Remover da lista negra" : "Adicionar à lista negra"} — ${emprestimo.cliente.nome}`,
+        payload: {
+          clientId: emprestimo.cliente.id,
+          currentStatus: emprestimo.cliente.blacklist,
+          emprestimoId: emprestimo.id,
+        },
+      });
+    };
+    startTransition(async () => {
+      if (isOfflineEmp) {
+        await enqueue();
+        return;
+      }
+      try {
+        await toggleClientBlacklist(emprestimo.cliente.id, emprestimo.cliente.blacklist, emprestimo.id);
+      } catch (err) {
+        if (isNetworkError(err)) {
+          await enqueue();
+          return;
+        }
+        alert("Erro ao atualizar lista negra.");
+      }
+    });
   };
   const excluir = () => {
+    const enqueue = async () => {
+      await enqueueOfflineAction({
+        type: "DELETE_EMPRESTIMO",
+        entityId: emprestimo.id,
+        dependsOnEntityId: emprestimo.pendingSync ? emprestimo.id : undefined,
+        label: `Excluir empréstimo — ${emprestimo.cliente.nome}`,
+        payload: { emprestimoId: emprestimo.id },
+      });
+      router.push("/emprestimos");
+    };
     startTransition(async () => {
-      const res = await deleteLoan(emprestimo.id);
-      if (res?.success && res?.redirectUrl) router.push(res.redirectUrl);
+      if (isOfflineEmp) {
+        await enqueue();
+        return;
+      }
+      try {
+        const res = await deleteLoan(emprestimo.id);
+        if (res?.success && res?.redirectUrl) router.push(res.redirectUrl);
+      } catch (err) {
+        if (isNetworkError(err)) {
+          await enqueue();
+          return;
+        }
+        alert("Erro ao excluir empréstimo.");
+      }
     });
   };
 
@@ -466,10 +622,27 @@ export default function EmprestimoDetalhesView({
       ? "Despausar este empréstimo? Ele voltará a aparecer em cobranças e no dashboard."
       : "Pausar este empréstimo? Foi feito um acordo com o cobrador. O empréstimo sairá das cobranças até ser despausado.";
     if (!confirm(msg)) return;
+    const enqueue = async () => {
+      await enqueueOfflineAction({
+        type: "TOGGLE_PAUSAR_EMPRESTIMO",
+        entityId: emprestimo.id,
+        dependsOnEntityId: emprestimo.pendingSync ? emprestimo.id : undefined,
+        label: `${isPausado ? "Retomar empréstimo" : "Pausar empréstimo"} — ${emprestimo.cliente.nome}`,
+        payload: { emprestimoId: emprestimo.id, statusAtual: emprestimo.status },
+      });
+    };
     startTransition(async () => {
+      if (isOfflineEmp) {
+        await enqueue();
+        return;
+      }
       try {
         await togglePausarEmprestimo(emprestimo.id, emprestimo.status);
       } catch (err: any) {
+        if (isNetworkError(err)) {
+          await enqueue();
+          return;
+        }
         alert(err?.message || "Erro ao pausar empréstimo.");
       }
     });
@@ -484,7 +657,24 @@ export default function EmprestimoDetalhesView({
 
   const executarRenovacao = (enviarWhatsapp: boolean) => {
     setRenovFeedback(null);
+    const enqueue = async () => {
+      await enqueueOfflineAction({
+        type: "RECEBER_SO_JUROS",
+        entityId: emprestimo.id,
+        dependsOnEntityId: emprestimo.pendingSync ? emprestimo.id : undefined,
+        label: `Renovar +30d — ${emprestimo.cliente.nome}`,
+        payload: { emprestimoId: emprestimo.id, enviarWhatsapp },
+      });
+      setRenovFeedback({
+        sucesso: true,
+        whatsappEnviado: false,
+      });
+    };
     startTransition(async () => {
+      if (isOfflineEmp) {
+        await enqueue();
+        return;
+      }
       try {
         const res = await receberSoJurosEmprestimo(emprestimo.id, enviarWhatsapp);
         setRenovFeedback({
@@ -494,6 +684,10 @@ export default function EmprestimoDetalhesView({
           whatsappTexto: res?.whatsappTexto,
         });
       } catch (err: any) {
+        if (isNetworkError(err)) {
+          await enqueue();
+          return;
+        }
         setRenovFeedback({
           sucesso: false,
           erro: err?.message || "Erro ao renovar empréstimo.",
@@ -620,17 +814,81 @@ export default function EmprestimoDetalhesView({
     e.preventDefault();
     const v = Number(valorAbater);
     if (!v || v <= 0) { alert("Valor inválido."); return; }
+    const enqueue = async () => {
+      await enqueueOfflineAction({
+        type: "RENEGOCIAR_EMPRESTIMO",
+        entityId: emprestimo.id,
+        dependsOnEntityId: emprestimo.pendingSync ? emprestimo.id : undefined,
+        label: `Renegociar (abater ${fmt(v)}) — ${emprestimo.cliente.nome}`,
+        payload: {
+          emprestimoId: emprestimo.id,
+          valorAbatido: v,
+          aplicarJuros,
+          taxaJuros: aplicarJuros ? Number(taxaReneg) : 0,
+        },
+      });
+      setModal(null);
+      setValorAbater("");
+    };
     startTransition(async () => {
-      try { await renegociarEmprestimo(emprestimo.id, v, aplicarJuros, aplicarJuros ? Number(taxaReneg) : 0); setModal(null); setValorAbater(""); }
-      catch (err: any) { alert(err.message); }
+      if (isOfflineEmp) {
+        await enqueue();
+        return;
+      }
+      try {
+        await renegociarEmprestimo(emprestimo.id, v, aplicarJuros, aplicarJuros ? Number(taxaReneg) : 0);
+        setModal(null);
+        setValorAbater("");
+      } catch (err: any) {
+        if (isNetworkError(err)) {
+          await enqueue();
+          return;
+        }
+        alert(err.message);
+      }
     });
   };
   const submitReprog = (e: React.FormEvent) => {
     e.preventDefault();
     if (!novaData) { alert("Data obrigatória."); return; }
+    const enqueue = async () => {
+      await enqueueOfflineAction({
+        type: "REPROGRAMAR_EMPRESTIMO",
+        entityId: emprestimo.id,
+        dependsOnEntityId: emprestimo.pendingSync ? emprestimo.id : undefined,
+        label: `Reprogramar (${novaData}) — ${emprestimo.cliente.nome}`,
+        payload: {
+          emprestimoId: emprestimo.id,
+          novaDataVencimento: novaData,
+          principalExtra: extra ? Number(extra) : 0,
+          taxaJuros: taxaReprog ? Number(taxaReprog) : 0,
+          frequencia: freqReprog,
+          enviarWhatsapp: true,
+        },
+      });
+      setModal(null);
+      setNovaData("");
+      setExtra("");
+      setTaxaReprog("");
+    };
     startTransition(async () => {
-      try { await reprogramarEmprestimo(emprestimo.id, novaData, extra ? Number(extra) : 0, taxaReprog ? Number(taxaReprog) : 0, freqReprog); setModal(null); setNovaData(""); setExtra(""); setTaxaReprog(""); }
-      catch (err: any) { alert(err.message); }
+      if (isOfflineEmp) {
+        await enqueue();
+        return;
+      }
+      try {
+        await reprogramarEmprestimo(emprestimo.id, novaData, extra ? Number(extra) : 0, taxaReprog ? Number(taxaReprog) : 0, freqReprog);
+        setModal(null);
+        setNovaData("");
+        setExtra("");
+        setTaxaReprog("");
+      } catch (err: any) {
+        if (isNetworkError(err)) {
+          await enqueue();
+          return;
+        }
+        alert(err.message);
+      }
     });
   };
 
@@ -653,7 +911,8 @@ export default function EmprestimoDetalhesView({
   // ... inside component ...
   const [funcionarios, setFuncionarios] = useState<any[]>([]);
   useEffect(() => {
-    listarFuncionarios().then(setFuncionarios);
+    if (typeof navigator !== "undefined" && !navigator.onLine) return;
+    listarFuncionarios().then(setFuncionarios).catch(() => {});
   }, []);
 
   const [funcId, setFuncId] = useState(emprestimo.funcionario_id || "");
@@ -1632,11 +1891,33 @@ export default function EmprestimoDetalhesView({
                 disabled={isSavingParcelaData || !editingParcela.data}
                 onClick={async () => {
                   setIsSavingParcelaData(true);
-                  try {
-                    await atualizarDataPagamentoParcela(editingParcela.id, new Date(editingParcela.data));
+                  const enqueue = async () => {
+                    await enqueueOfflineAction({
+                      type: "ATUALIZAR_DATA_PAGAMENTO_PARCELA",
+                      entityId: emprestimo.id,
+                      dependsOnEntityId: emprestimo.pendingSync ? emprestimo.id : undefined,
+                      label: `Alterar data parcela #${editingParcela.numero} — ${emprestimo.cliente.nome}`,
+                      payload: {
+                        emprestimoId: emprestimo.id,
+                        parcelaId: editingParcela.id,
+                        novaDataIso: new Date(editingParcela.data).toISOString(),
+                      },
+                    });
                     closeEditingParcela();
+                  };
+                  try {
+                    if (isOfflineEmp) {
+                      await enqueue();
+                    } else {
+                      await atualizarDataPagamentoParcela(editingParcela.id, new Date(editingParcela.data));
+                      closeEditingParcela();
+                    }
                   } catch (err: any) {
-                    alert(err.message || "Erro ao atualizar data");
+                    if (isNetworkError(err)) {
+                      await enqueue();
+                    } else {
+                      alert(err.message || "Erro ao atualizar data");
+                    }
                   } finally {
                     setIsSavingParcelaData(false);
                   }

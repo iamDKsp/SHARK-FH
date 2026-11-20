@@ -7,6 +7,7 @@ import { Plus, CheckCircle, AlertTriangle, Clock, Trash2, Search, MessageCircle 
 import { linkWhatsapp } from "@/lib/mensagens/render";
 import ModalCadastrarCheque from "./ModalCadastrarCheque";
 import { updateChequeStatus, deleteCheque } from "@/app/cheques/actions";
+import { isNetworkError, useOffline } from "@/components/offline/OfflineProvider";
 
 interface Cheque {
   id: string;
@@ -38,6 +39,7 @@ interface ChequesClientViewProps {
 
 export default function ChequesClientView({ cheques, clientes, parceiros }: ChequesClientViewProps) {
   useScrollRestoration("cheques-list");
+  const { isOnline, enqueueOfflineAction } = useOffline();
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useUrlState<string>("q", "", "");
@@ -69,9 +71,58 @@ export default function ChequesClientView({ cheques, clientes, parceiros }: Cheq
     return clienteNome.includes(term) || telefone.includes(term);
   });
 
-  const handleDelete = async (id: string) => {
-    if (confirm("Tem certeza que deseja excluir este cheque?")) {
-      await deleteCheque(id);
+  const handleStatusChange = async (cheque: Cheque & { pendingSync?: boolean }, newStatus: string) => {
+    const nome = cheque.cliente?.nome || cheque.titular || "Cheque";
+    const statusRotulo =
+      newStatus === "compensado" ? "Compensado" : newStatus === "devolvido" ? "Devolvido" : "Pendente";
+    const enqueue = async () => {
+      await enqueueOfflineAction({
+        type: "UPDATE_CHEQUE_STATUS",
+        entityId: cheque.id,
+        dependsOnEntityId: cheque.pendingSync ? cheque.id : undefined,
+        label: `Cheque (${statusRotulo}) — ${nome}`,
+        payload: { id: cheque.id, newStatus },
+      });
+    };
+    if (!isOnline || cheque.pendingSync) {
+      await enqueue();
+      return;
+    }
+    try {
+      await updateChequeStatus(cheque.id, newStatus);
+    } catch (err) {
+      if (isNetworkError(err)) {
+        await enqueue();
+        return;
+      }
+      alert("Erro ao atualizar status do cheque.");
+    }
+  };
+
+  const handleDelete = async (cheque: Cheque & { pendingSync?: boolean }) => {
+    if (!confirm("Tem certeza que deseja excluir este cheque?")) return;
+    const nome = cheque.cliente?.nome || cheque.titular || "Cheque";
+    const enqueue = async () => {
+      await enqueueOfflineAction({
+        type: "DELETE_CHEQUE",
+        entityId: cheque.id,
+        dependsOnEntityId: cheque.pendingSync ? cheque.id : undefined,
+        label: `Excluir cheque — ${nome}`,
+        payload: { id: cheque.id },
+      });
+    };
+    if (!isOnline || cheque.pendingSync) {
+      await enqueue();
+      return;
+    }
+    try {
+      await deleteCheque(cheque.id);
+    } catch (err) {
+      if (isNetworkError(err)) {
+        await enqueue();
+        return;
+      }
+      alert("Erro ao excluir cheque.");
     }
   };
 
@@ -144,7 +195,7 @@ export default function ChequesClientView({ cheques, clientes, parceiros }: Cheq
                 <div className="flex items-center space-x-2 w-full sm:w-auto">
                   <select
                     value={c.status}
-                    onChange={(e) => updateChequeStatus(c.id, e.target.value)}
+                    onChange={(e) => handleStatusChange(c as any, e.target.value)}
                     className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer"
                   >
                     <option value="em_maos">Pendente</option>
@@ -165,7 +216,7 @@ export default function ChequesClientView({ cheques, clientes, parceiros }: Cheq
                   )}
                   
                   <button
-                    onClick={() => handleDelete(c.id)}
+                    onClick={() => handleDelete(c as any)}
                     className="w-8 h-8 rounded-full bg-rose-50 text-rose-500 flex items-center justify-center hover:bg-rose-100 transition-colors cursor-pointer"
                     title="Excluir"
                   >

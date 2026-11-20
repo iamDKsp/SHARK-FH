@@ -9,6 +9,7 @@ import { receberSoJurosEmprestimo } from "@/app/emprestimos/[id]/actions";
 import { enviarMensagemManual, listarRespostasRapidas } from "@/app/mensagens/actions";
 import { hojeEmBrasilia } from "@/lib/dateUtils";
 import ClienteAvatar from "@/components/ClienteAvatar";
+import { isNetworkError, useOffline } from "@/components/offline/OfflineProvider";
 
 interface Cliente {
   id: string;
@@ -162,6 +163,7 @@ export default function EmprestimosListWrapper({
 }: EmprestimosListWrapperProps) {
   // ── Scroll restoration ──
   useScrollRestoration("emprestimos-list");
+  const { isOnline, enqueueOfflineAction } = useOffline();
 
   // ── Estado persistido na URL ──
   const parseStatus = (f: string) => resolveStatus(f, modoCarencia, modoCarencia10);
@@ -243,10 +245,28 @@ export default function EmprestimosListWrapper({
     if (!renewModalEmp) return;
     setIsRenewing(true);
     setRenewError(null);
+    const empId = renewModalEmp.id;
+    const clienteNome = renewModalEmp.cliente?.nome || "cliente";
+
+    const enqueueRenew = async () => {
+      await enqueueOfflineAction({
+        type: "RECEBER_SO_JUROS",
+        entityId: empId,
+        dependsOnEntityId: renewModalEmp.pendingSync ? empId : undefined,
+        label: `Renovar +30d — ${clienteNome}`,
+        payload: { emprestimoId: empId, enviarWhatsapp },
+      });
+      closeRenewModal();
+    };
+
     startRenewTransition(async () => {
+      if (!isOnline || renewModalEmp.pendingSync) {
+        await enqueueRenew();
+        setIsRenewing(false);
+        return;
+      }
       try {
-        const res = await receberSoJurosEmprestimo(renewModalEmp.id, enviarWhatsapp);
-        const clienteNome = renewModalEmp.cliente?.nome || "cliente";
+        const res = await receberSoJurosEmprestimo(empId, enviarWhatsapp);
         closeRenewModal();
         if (res?.whatsappEnviado) {
           alert(`Empréstimo renovado com sucesso!\nMensagem enviada para ${clienteNome} no WhatsApp:\n\n"${res.whatsappTexto}"`);
@@ -260,6 +280,10 @@ export default function EmprestimosListWrapper({
           );
         }
       } catch (err: any) {
+        if (isNetworkError(err)) {
+          await enqueueRenew();
+          return;
+        }
         setRenewError(err.message || "Erro ao renovar o empréstimo.");
       } finally {
         setIsRenewing(false);
@@ -708,7 +732,11 @@ export default function EmprestimosListWrapper({
         )}
 
         <Link
-          href={`/emprestimos/${emp.id}`}
+          href={
+            !isOnline || emp.pendingSync
+              ? `/offline/emprestimo?id=${encodeURIComponent(emp.id)}`
+              : `/emprestimos/${emp.id}`
+          }
           onClick={() => {
             if (typeof window !== "undefined") {
               sessionStorage.setItem("scroll_emprestimos-list", String(window.scrollY));
@@ -720,6 +748,11 @@ export default function EmprestimosListWrapper({
         <div className="space-y-2 z-10 pointer-events-none pl-2 min-w-0 flex-1">
           <div className={`flex items-center space-x-2 sm:space-x-3 flex-wrap gap-y-1 min-w-0 ${sub ? "" : "pr-14 md:pr-0"}`}>
             <span className="text-sm font-black text-slate-900 tracking-tight">{emp.cliente.nome}</span>
+            {emp.pendingSync && (
+              <span className="flex items-center gap-1 bg-amber-100 text-amber-800 border border-amber-200 text-[10px] font-black px-2 py-0.5 rounded-md uppercase tracking-wider">
+                <Clock className="w-3 h-3" /> Pendente de envio
+              </span>
+            )}
             {isPausado ? (
               <span className="flex items-center gap-1 bg-yellow-100 text-yellow-800 text-xs font-black px-2 py-0.5 rounded-md uppercase tracking-wider">
                 <PauseCircle className="w-3 h-3" /> Pausado

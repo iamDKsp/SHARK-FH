@@ -207,7 +207,7 @@ export default async function ClienteDetalhesPage({ params }: PageProps) {
           >
             <Edit3 className="w-5 h-5" />
           </Link>
-          <DeleteClientButton clienteId={cliente.id} onDeleteAction={deleteCliente} />
+          <DeleteClientButton clienteId={cliente.id} clienteNome={cliente.nome} onDeleteAction={deleteCliente} />
         </div>
       </div>
 

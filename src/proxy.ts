@@ -11,7 +11,7 @@ export async function proxy(request: NextRequest) {
 
   // Painel do funcionário (/<slug>/cliente) e sua API têm autenticação própria (senha do funcionário).
   // Bloqueia Server Actions nessa rota para que ações do ADM não possam ser invocadas por ela.
-  const RESERVADOS = ["api", "login", "clientes", "emprestimos", "parceiros", "cobrancas", "configuracoes", "cheques", "mensagens", "perfil"];
+  const RESERVADOS = ["api", "login", "clientes", "emprestimos", "parceiros", "cobrancas", "configuracoes", "cheques", "mensagens", "perfil", "offline"];
   const painel = pathname.match(/^\/([^/]+)\/cliente\/?$/);
   if (painel && !RESERVADOS.includes(painel[1]) && !request.headers.has("next-action")) {
     return NextResponse.next();
@@ -24,6 +24,9 @@ export async function proxy(request: NextRequest) {
   if (
     pathname.startsWith("/api/auth/login") ||
     pathname.startsWith("/login") ||
+    pathname === "/sw.js" ||
+    pathname === "/offline" ||
+    pathname.startsWith("/offline/") ||
     pathname.startsWith("/_next") ||
     pathname.startsWith("/icons") ||
     pathname.includes("favicon") ||
@@ -51,8 +54,12 @@ export async function proxy(request: NextRequest) {
 
   // Verificar autenticação
   const token = request.cookies.get("sol_auth_token")?.value;
+  const isApiRoute = pathname.startsWith("/api/");
 
   if (!token) {
+    if (isApiRoute) {
+      return NextResponse.json({ error: "Não autorizado" }, { status: 401 });
+    }
     const url = new URL("/login", request.url);
     url.searchParams.set("callbackUrl", pathname);
     return NextResponse.redirect(url);
@@ -62,6 +69,9 @@ export async function proxy(request: NextRequest) {
     await jwtVerify(token, JWT_SECRET);
     return NextResponse.next();
   } catch (error) {
+    if (isApiRoute) {
+      return NextResponse.json({ error: "Sessão expirada" }, { status: 401 });
+    }
     const url = new URL("/login", request.url);
     return NextResponse.redirect(url);
   }
@@ -74,8 +84,8 @@ export const config = {
      * - api/auth (auth api routes)
      * - _next/static (static files)
      * - _next/image (image optimization files)
-     * - favicon.ico, images, icons, manifests
+     * - sw.js, favicon.ico, images, icons, manifests
      */
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|svg|ico|webp|webmanifest)$).*)",
+    "/((?!_next/static|_next/image|sw\\.js|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|svg|ico|webp|webmanifest)$).*)",
   ],
 };

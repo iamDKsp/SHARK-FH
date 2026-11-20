@@ -12,6 +12,7 @@ import {
   type AcaoEmMassa,
   type ResultadoEmMassa,
 } from "@/app/clientes/[id]/actions";
+import { isNetworkError, useOffline } from "@/components/offline/OfflineProvider";
 import { legendaCronograma } from "@/app/mensagens/actions";
 import {
   baixarEmprestimosEmMassaPdf,
@@ -74,6 +75,7 @@ export default function EmprestimosClienteCard({
   emprestimos,
 }: Props) {
   const router = useRouter();
+  const { isOnline, enqueueOfflineAction } = useOffline();
   const [modoSelecao, setModoSelecao] = useState(false);
   const [selecionados, setSelecionados] = useState<Set<string>>(new Set());
 
@@ -319,15 +321,52 @@ export default function EmprestimosClienteCard({
       setErro("Escolha a nova data de vencimento.");
       return;
     }
+    const ids = Array.from(selecionados);
+    const rotuloAcao: Record<AcaoEmMassa, string> = {
+      renovar: "Renovar em massa",
+      reprogramar: "Reprogramar em massa",
+      quitar: "Quitar em massa",
+      excluir: "Excluir em massa",
+    };
+
+    const enqueueMassa = async () => {
+      await enqueueOfflineAction({
+        type: "ALTERAR_EMPRESTIMOS_MASSA",
+        entityId: clienteId,
+        label: `${rotuloAcao[acao]} (${ids.length}) — ${clienteNome}`,
+        payload: {
+          clienteId,
+          ids,
+          acao,
+          opcoes: {
+            novaData: novaData || undefined,
+            cobrarJurosAtraso: cobrarJuros,
+            enviarWhatsapp,
+          },
+        },
+      });
+      setResultado({
+        itens: ids.map((id) => ({ id, status: "ok", mensagem: "Salvo na fila offline." })),
+      });
+    };
+
     startTransition(async () => {
+      if (!isOnline) {
+        await enqueueMassa();
+        return;
+      }
       try {
-        const res = await alterarEmprestimosEmMassa(clienteId, Array.from(selecionados), acao, {
+        const res = await alterarEmprestimosEmMassa(clienteId, ids, acao, {
           novaData: novaData || undefined,
           cobrarJurosAtraso: cobrarJuros,
           enviarWhatsapp,
         });
         setResultado(res);
       } catch (err: unknown) {
+        if (isNetworkError(err)) {
+          await enqueueMassa();
+          return;
+        }
         setErro((err instanceof Error && err.message) || "Erro ao aplicar a ação.");
       }
     });
@@ -458,10 +497,11 @@ export default function EmprestimosClienteCard({
             );
 
             if (!modoSelecao) {
+              const empHref = !isOnline ? `/offline/emprestimo?id=${encodeURIComponent(emp.id)}` : `/emprestimos/${emp.id}`;
               return (
                 <Link
                   key={emp.id}
-                  href={`/emprestimos/${emp.id}`}
+                  href={empHref}
                   className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-3 hover:bg-slate-50/60 transition-colors"
                 >
                   {conteudo}

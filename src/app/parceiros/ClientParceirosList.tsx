@@ -5,12 +5,14 @@ import { useScrollRestoration } from "@/hooks/useScrollRestoration";
 import Link from "next/link";
 import { Plus, Edit3, Trash2, X, Loader2, Phone } from "lucide-react";
 import { createParceiro, updateParceiro, deleteParceiro } from "./actions";
+import { generateUuid, isNetworkError, useOffline } from "@/components/offline/OfflineProvider";
 
 interface Parceiro {
   id: string;
   nome: string;
   telefone: string | null;
   criado_em: Date;
+  pendingSync?: boolean;
 }
 
 interface ClientParceirosListProps {
@@ -19,6 +21,7 @@ interface ClientParceirosListProps {
 
 export default function ClientParceirosList({ parceiros }: ClientParceirosListProps) {
   useScrollRestoration("parceiros-list");
+  const { isOnline, enqueueOfflineAction } = useOffline();
   const [isPending, startTransition] = useTransition();
   const [showModal, setShowModal] = useState(false);
   const [editingParceiro, setEditingParceiro] = useState<Parceiro | null>(null);
@@ -43,10 +46,28 @@ export default function ClientParceirosList({ parceiros }: ClientParceirosListPr
 
   const handleDelete = (id: string, name: string) => {
     if (confirm(`Deseja realmente remover o parceiro ${name}?`)) {
+      const target = parceiros.find((p) => p.id === id);
+      const enqueue = async () => {
+        await enqueueOfflineAction({
+          type: "DELETE_PARCEIRO",
+          entityId: id,
+          dependsOnEntityId: target?.pendingSync ? id : undefined,
+          label: `Excluir parceiro — ${name}`,
+          payload: { id },
+        });
+      };
       startTransition(async () => {
+        if (!isOnline || target?.pendingSync) {
+          await enqueue();
+          return;
+        }
         try {
           await deleteParceiro(id);
         } catch (err: any) {
+          if (isNetworkError(err)) {
+            await enqueue();
+            return;
+          }
           alert(err.message || "Erro ao deletar parceiro");
         }
       });
@@ -57,16 +78,37 @@ export default function ClientParceirosList({ parceiros }: ClientParceirosListPr
     e.preventDefault();
     if (!nome) return;
 
-    const fd = new FormData();
-    fd.set("nome", nome);
-    fd.set("telefone", telefone);
-
     startTransition(async () => {
       try {
         if (editingParceiro) {
-          await updateParceiro(editingParceiro.id, fd);
+          await enqueueOfflineAction(
+            {
+              type: "UPDATE_PARCEIRO",
+              entityId: editingParceiro.id,
+              dependsOnEntityId: editingParceiro.pendingSync ? editingParceiro.id : undefined,
+              label: `Editar parceiro — ${nome.trim()}`,
+              payload: {
+                id: editingParceiro.id,
+                nome: nome.trim(),
+                telefone: telefone || null,
+              },
+            },
+            { tryImmediateSync: true }
+          );
         } else {
-          await createParceiro(fd);
+          const entityId = generateUuid();
+          await enqueueOfflineAction(
+            {
+              type: "CREATE_PARCEIRO",
+              entityId,
+              label: `Novo parceiro: ${nome.trim()}`,
+              payload: {
+                nome: nome.trim(),
+                telefone: telefone || null,
+              },
+            },
+            { tryImmediateSync: true }
+          );
         }
         setShowModal(false);
       } catch (err: any) {

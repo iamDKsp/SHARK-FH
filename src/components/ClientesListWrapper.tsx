@@ -4,8 +4,10 @@ import { useEffect, useState, useRef } from "react";
 import { useUrlState } from "@/hooks/useUrlState";
 import { useScrollRestoration } from "@/hooks/useScrollRestoration";
 import Link from "next/link";
-import { Plus, Search, MessageCircle, Loader2, X, Send, Settings, Trash2 } from "lucide-react";
+import { Plus, Search, MessageCircle, Loader2, X, Send, Settings, Trash2, Clock, CloudOff } from "lucide-react";
 import { enviarMensagemManual, listarRespostasRapidas } from "@/app/mensagens/actions";
+import { useOffline } from "@/components/offline/OfflineProvider";
+import { searchCachedClientes } from "@/lib/offline/db";
 
 interface Cliente {
   id: string;
@@ -13,11 +15,13 @@ interface Cliente {
   telefone: string;
   cidade: string;
   documento: string;
-  foto_url: string | null;
+  foto_url?: string | null;
+  pendingSync?: boolean;
 }
 
 export default function ClientesListWrapper({ initialQuery = "" }: { initialQuery?: string }) {
   useScrollRestoration("clientes-list");
+  const { isOnline, session, pendingOps, dataRevision } = useOffline();
 
   const [query, setQuery] = useUrlState("q", initialQuery, "");
 
@@ -27,6 +31,7 @@ export default function ClientesListWrapper({ initialQuery = "" }: { initialQuer
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [totalCount, setTotalCount] = useState(0);
+  const [usingCache, setUsingCache] = useState(false);
 
   const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   // AbortController para cancelar requests de busca obsoletos (evita race condition)
@@ -77,9 +82,7 @@ export default function ClientesListWrapper({ initialQuery = "" }: { initialQuer
     }
   };
 
-  // Função para buscar clientes da API
-  // Fix: usa AbortController para cancelar requests anteriores ainda pendentes,
-  // evitando race condition onde resultado de query antiga sobrescreve resultado recente.
+  // Função para buscar clientes da API (com fallback automático para IndexedDB quando offline)
   const fetchClientes = async (searchQuery: string, pageNum: number, append = false) => {
     // Cancela qualquer request de busca anterior ainda em andamento
     if (!append && abortControllerRef.current) {
@@ -90,30 +93,82 @@ export default function ClientesListWrapper({ initialQuery = "" }: { initialQuer
       abortControllerRef.current = controller;
     }
 
+    const uid = session?.userId || "local";
+
+    const loadFromLocalCache = async () => {
+      const local = await searchCachedClientes(uid, searchQuery, pageNum, 16);
+      setUsingCache(true);
+      if (append) {
+        setClientes((prev) => [...prev, ...local.clientes]);
+      } else {
+        setClientes(local.clientes);
+      }
+      setHasMore(local.hasMore);
+      setTotalCount(local.totalCount);
+    };
+
     try {
       if (pageNum === 1 && !append) setLoading(true);
       else setLoadingMore(true);
+
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        await loadFromLocalCache();
+        return;
+      }
 
       // Fix: envia a query sem remover acentos — a API já usa unaccent() no Postgres
       const response = await fetch(
         `/api/clientes?query=${encodeURIComponent(searchQuery.trim())}&page=${pageNum}&limit=16`,
         { signal: controller.signal }
       );
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
 
       if (data.clientes) {
+        setUsingCache(false);
+        let list: Cliente[] = data.clientes;
+        let count: number = data.totalCount;
+
+        // Injeta no topo clientes criados/editados offline ainda pendentes e oculta exclusões pendentes
+        if (pageNum === 1 && !append && pendingOps.length > 0) {
+          const deletedIds = new Set(
+            pendingOps.filter((o) => o.type === "DELETE_CLIENTE").map((o) => o.entityId)
+          );
+          list = list.filter((c) => !deletedIds.has(c.id));
+
+          const local = await searchCachedClientes(uid, searchQuery, 1, 50);
+          const pendingLocal = local.clientes.filter((c) => c.pendingSync);
+          if (pendingLocal.length > 0) {
+            const existingIds = new Set(list.map((c) => c.id));
+            const extras = pendingLocal.filter((c) => !existingIds.has(c.id));
+            list = [
+              ...extras,
+              ...list.map((c) => {
+                const match = pendingLocal.find((p) => p.id === c.id);
+                return match ? { ...c, ...match, pendingSync: true } : c;
+              }),
+            ];
+            count += extras.length;
+          }
+        }
+
         if (append) {
-          setClientes((prev) => [...prev, ...data.clientes]);
+          setClientes((prev) => [...prev, ...list]);
         } else {
-          setClientes(data.clientes);
+          setClientes(list);
         }
         setHasMore(data.hasMore);
-        setTotalCount(data.totalCount);
+        setTotalCount(count);
       }
     } catch (err) {
       // AbortError é esperado quando o request é cancelado propositalmente — não logar como erro
       if (err instanceof Error && err.name === "AbortError") return;
-      console.error("Erro ao buscar clientes:", err);
+      console.warn("Falha na rede ao buscar clientes — usando cache local:", err);
+      try {
+        await loadFromLocalCache();
+      } catch (cacheErr) {
+        console.error("Erro ao ler cache local de clientes:", cacheErr);
+      }
     } finally {
       // Só limpa loading se este controller ainda é o ativo (não foi substituído)
       if (!append && abortControllerRef.current !== controller) return;
@@ -122,7 +177,7 @@ export default function ClientesListWrapper({ initialQuery = "" }: { initialQuer
     }
   };
 
-  // Efeito disparado ao digitar na busca (com debounce)
+  // Efeito disparado ao digitar na busca (com debounce) ou quando o cache/fila muda
   useEffect(() => {
     if (debounceTimeoutRef.current) {
       clearTimeout(debounceTimeoutRef.current);
@@ -131,12 +186,12 @@ export default function ClientesListWrapper({ initialQuery = "" }: { initialQuer
     debounceTimeoutRef.current = setTimeout(() => {
       setPage(1);
       fetchClientes(query, 1, false);
-    }, 300); // 300ms de debounce para não afogar o banco
+    }, 250);
 
     return () => {
       if (debounceTimeoutRef.current) clearTimeout(debounceTimeoutRef.current);
     };
-  }, [query]);
+  }, [query, isOnline, dataRevision]);
 
   // Carregar mais clientes (paginação)
   const handleLoadMore = () => {
@@ -181,6 +236,14 @@ export default function ClientesListWrapper({ initialQuery = "" }: { initialQuer
         )}
       </div>
 
+      {/* Aviso discreto quando lendo do cache local */}
+      {usingCache && (
+        <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-amber-50 border border-amber-200/80 text-amber-900 text-xs font-semibold">
+          <CloudOff className="w-4 h-4 text-amber-600 shrink-0" />
+          <span>Modo offline — exibindo clientes salvos no aparelho.</span>
+        </div>
+      )}
+
       {/* Grid de Clientes */}
       <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-4 transition-opacity duration-200 ${loading && page === 1 && clientes.length > 0 ? "opacity-60" : "opacity-100"}`}>
         {loading && page === 1 && clientes.length === 0 ? (
@@ -195,14 +258,20 @@ export default function ClientesListWrapper({ initialQuery = "" }: { initialQuer
         ) : (
           clientes.map((c, index) => {
             const avatarLetra = c.nome.charAt(0).toUpperCase();
+            const hrefDestino =
+              usingCache || !isOnline || c.pendingSync
+                ? `/offline/cliente?id=${encodeURIComponent(c.id)}`
+                : `/clientes/${c.id}`;
             
             return (
               <div 
                 key={c.id} 
                 style={{ "--i": Math.min(index, 10) } as React.CSSProperties}
-                className="animate-row-in premium-card p-4 flex items-center justify-between gap-3 bg-white border border-slate-200 shadow-sm rounded-2xl active:scale-[0.98] transition-transform cursor-pointer hover:border-emerald-400 overflow-hidden"
+                className={`animate-row-in premium-card p-4 flex items-center justify-between gap-3 bg-white border shadow-sm rounded-2xl active:scale-[0.98] transition-transform cursor-pointer hover:border-emerald-400 overflow-hidden ${
+                  c.pendingSync ? "border-amber-300 bg-amber-50/20" : "border-slate-200"
+                }`}
               >
-                <Link href={`/clientes/${c.id}`} className="flex items-center space-x-3 sm:space-x-4 flex-1 min-w-0 group">
+                <Link href={hrefDestino} className="flex items-center space-x-3 sm:space-x-4 flex-1 min-w-0 group">
                   {/* Foto de Perfil ou Letra */}
                   {c.foto_url ? (
                     <img 
@@ -218,9 +287,16 @@ export default function ClientesListWrapper({ initialQuery = "" }: { initialQuer
 
                   {/* Informações */}
                   <div className="space-y-0.5 pointer-events-none min-w-0 flex-1">
-                    <h3 className="font-bold text-slate-900 leading-tight group-hover:text-emerald-600 transition-colors truncate">
-                      {c.nome}
-                    </h3>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <h3 className="font-bold text-slate-900 leading-tight group-hover:text-emerald-600 transition-colors truncate">
+                        {c.nome}
+                      </h3>
+                      {c.pendingSync && (
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold shrink-0">
+                          <Clock className="w-2.5 h-2.5" /> Pendente
+                        </span>
+                      )}
+                    </div>
                     <p className="text-xs text-slate-500 font-medium truncate">
                       {c.telefone}
                     </p>

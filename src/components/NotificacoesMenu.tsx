@@ -76,6 +76,7 @@ export default function NotificacoesMenu() {
   }, []);
 
   const fetchNotificacoes = useCallback(async () => {
+    if (typeof navigator !== "undefined" && !navigator.onLine) return;
     setLoading(true);
     try {
       const res = await fetch("/api/notificacoes", { cache: "no-store" });

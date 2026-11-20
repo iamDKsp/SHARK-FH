@@ -13,18 +13,27 @@ import {
   Handshake,
   MessageSquare,
   Shield,
-  DollarSign
+  DollarSign,
+  Cloud,
+  CloudOff,
+  Loader2
 } from "lucide-react";
 import NotificacoesMenu from "@/components/NotificacoesMenu";
+import { useOffline } from "@/components/offline/OfflineProvider";
 
 export default function Navbar() {
   const pathname = usePathname();
   const [userName, setUserName] = useState<string | null>(null);
+  const { isOnline, isSyncing, pendingCount, session, setModalOpen, clearOfflineOnLogout } = useOffline();
   // Painel do funcionário (/<slug>/cliente) não mostra o menu do ADM
   const ocultar = pathname === "/login" || /^\/[^/]+\/cliente\/?$/.test(pathname);
 
   useEffect(() => {
     if (ocultar) return;
+    if (session?.userName && !userName) {
+      setUserName(session.userName);
+    }
+    if (typeof navigator !== "undefined" && !navigator.onLine) return;
     fetch("/api/perfil")
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
@@ -33,7 +42,7 @@ export default function Navbar() {
         }
       })
       .catch(() => {});
-  }, [pathname]);
+  }, [pathname, session?.userName]);
 
   const menuItems = [
     { name: "Início", path: "/", icon: LayoutDashboard },
@@ -45,12 +54,78 @@ export default function Navbar() {
   ];
 
   const handleLogout = async () => {
+    if (pendingCount > 0) {
+      const ok = window.confirm(
+        `Você tem ${pendingCount} ${pendingCount === 1 ? "ação pendente" : "ações pendentes"} aguardando envio.\n\nDeseja sair mesmo assim? As pendências ficarão salvas neste aparelho até você entrar novamente.`
+      );
+      if (!ok) return;
+    } else {
+      await clearOfflineOnLogout().catch(() => {});
+    }
     try {
       await fetch("/api/auth/logout", { method: "POST" });
       window.location.href = "/login";
     } catch (err) {
       console.error("Erro ao sair", err);
     }
+  };
+
+  const renderStatusPill = (compact = false) => {
+    if (!isOnline) {
+      return (
+        <button
+          type="button"
+          onClick={() => setModalOpen(true)}
+          className={`flex items-center gap-1.5 rounded-full bg-amber-400/20 border border-amber-300/40 text-amber-200 hover:bg-amber-400/30 transition-colors cursor-pointer ${
+            compact ? "px-2 py-1 text-[10px] font-bold" : "px-2.5 py-1 text-xs font-bold"
+          }`}
+          title="Modo Offline — ver cache e fila pendente"
+        >
+          <CloudOff className="w-3.5 h-3.5 shrink-0" />
+          <span>{pendingCount > 0 ? `Offline (${pendingCount})` : "Offline"}</span>
+        </button>
+      );
+    }
+    if (isSyncing) {
+      return (
+        <button
+          type="button"
+          onClick={() => setModalOpen(true)}
+          className={`flex items-center gap-1.5 rounded-full bg-emerald-400/20 border border-emerald-300/40 text-emerald-100 transition-colors cursor-pointer ${
+            compact ? "px-2 py-1 text-[10px] font-bold" : "px-2.5 py-1 text-xs font-bold"
+          }`}
+          title="Sincronizando ações pendentes"
+        >
+          <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+          <span>Enviando...</span>
+        </button>
+      );
+    }
+    if (pendingCount > 0) {
+      return (
+        <button
+          type="button"
+          onClick={() => setModalOpen(true)}
+          className={`flex items-center gap-1.5 rounded-full bg-amber-400/20 border border-amber-300/40 text-amber-200 hover:bg-amber-400/30 transition-colors cursor-pointer ${
+            compact ? "px-2 py-1 text-[10px] font-bold" : "px-2.5 py-1 text-xs font-bold"
+          }`}
+          title="Ações pendentes aguardando envio"
+        >
+          <Cloud className="w-3.5 h-3.5 shrink-0" />
+          <span>{pendingCount} pend.</span>
+        </button>
+      );
+    }
+    return (
+      <button
+        type="button"
+        onClick={() => setModalOpen(true)}
+        className="p-1.5 text-emerald-300/80 hover:text-white rounded-full hover:bg-emerald-800/50 transition-colors cursor-pointer"
+        title="Online — ver status do cache offline"
+      >
+        <Cloud className="w-4 h-4" />
+      </button>
+    );
   };
 
   if (ocultar) {
@@ -122,6 +197,7 @@ export default function Navbar() {
 
             {/* User info / Sair - Desktop */}
             <div className="hidden md:flex items-center space-x-3">
+              {renderStatusPill(false)}
               <NotificacoesMenu />
               <Link 
                 href="/perfil"
@@ -148,6 +224,7 @@ export default function Navbar() {
 
             {/* Action Icons - Mobile Only (Top Bar) */}
             <div className="md:hidden flex items-center space-x-0.5 min-[360px]:space-x-1">
+              {renderStatusPill(true)}
               <NotificacoesMenu />
               <Link 
                 href="/cheques"
