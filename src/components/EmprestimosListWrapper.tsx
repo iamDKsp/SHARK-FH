@@ -371,11 +371,14 @@ export default function EmprestimosListWrapper({
         (emp.parcelas || []).find((p: any) => p.status === "aberto") ??
         (emp.parcelas && emp.parcelas.length > 0 ? emp.parcelas[emp.parcelas.length - 1] : null);
 
+      const parcelasAbertas = (emp.parcelas || []).filter((p: any) => p.status === "aberto");
       const totalEstimado = isAVista
         ? (parcelaPrincipalAVista ? Number(parcelaPrincipalAVista.valor) : principal * (1 + taxaJuros / 100))
-        : parcelasNaoRenov.length > 0
-          ? parcelasNaoRenov.reduce((acc: number, p: any) => acc + Number(p.valor), 0)
-          : principal * (1 + taxaJuros / 100);
+        : parcelasAbertas.length > 0
+          ? parcelasAbertas.reduce((acc: number, p: any) => acc + Number(p.valor), 0)
+          : parcelasNaoRenov.length > 0
+            ? parcelasNaoRenov.reduce((acc: number, p: any) => acc + Number(p.valor), 0)
+            : principal * (1 + taxaJuros / 100);
 
       const vencFinalObj = new Date(emp.data_vencimento);
       const dataVencimentoObjUTC = new Date(

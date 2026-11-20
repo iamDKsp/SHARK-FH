@@ -99,25 +99,65 @@ export default async function ClienteDetalhesPage({ params }: PageProps) {
     const vencObj = new Date(emp.data_vencimento);
     const vencimentoUTC = new Date(Date.UTC(vencObj.getUTCFullYear(), vencObj.getUTCMonth(), vencObj.getUTCDate()));
 
-    const estaAtrasado = emp.status === "ativo" && vencimentoUTC < hojeUTC;
+    const temParcelas = emp.parcelas && emp.parcelas.length > 0;
+    const parcelasPagas = temParcelas ? emp.parcelas.filter((p) => p.status.startsWith("pago")) : [];
+    const parcelasAbertas = temParcelas ? emp.parcelas.filter((p) => p.status === "aberto") : [];
 
-    if (emp.status === "quitado") {
+    // Soma tudo que já foi efetivamente pago (parcelas pagas de ativos + quitados)
+    if (temParcelas) {
+      totalRecebido += parcelasPagas.reduce((acc, p) => acc + Number(p.valor_pago ?? p.valor), 0);
+    } else if (emp.status.startsWith("quitado")) {
       totalRecebido += totalComJuros;
-    } else if (emp.status === "ativo") {
-      totalEmprestadoAtivo += principal;
-      totalAReceber += totalComJuros;
-      valorTotalDivida += totalComJuros;
+    }
+
+    if (emp.status === "ativo") {
+      const valorEmAberto = temParcelas
+        ? parcelasAbertas.reduce((acc, p) => acc + Number(p.valor), 0)
+        : totalComJuros;
+
+      let principalEmAberto = principal;
+      if (temParcelas) {
+        if (emp.tipo_pagamento === "parcelado" || emp.tipo_pagamento === "parcela_juros_mes") {
+          const totalContrato = emp.parcelas.reduce((acc, p) => acc + Number(p.valor), 0);
+          principalEmAberto = totalContrato > 0 ? principal * (valorEmAberto / totalContrato) : 0;
+        } else {
+          principalEmAberto = juros > 0 ? valorEmAberto / (1 + juros / 100) : valorEmAberto;
+        }
+      }
+
+      const proxParcelaAberta = parcelasAbertas[0];
+      const proxVencData = proxParcelaAberta ? proxParcelaAberta.data_vencimento : emp.data_vencimento;
+
+      let estaAtrasado = false;
+      let valorAtrasadoEmp = 0;
+      if (temParcelas) {
+        parcelasAbertas.forEach((p) => {
+          const pvObj = new Date(p.data_vencimento);
+          const pvUTC = new Date(Date.UTC(pvObj.getUTCFullYear(), pvObj.getUTCMonth(), pvObj.getUTCDate()));
+          if (pvUTC < hojeUTC) {
+            estaAtrasado = true;
+            valorAtrasadoEmp += Number(p.valor);
+          }
+        });
+      } else if (vencimentoUTC < hojeUTC) {
+        estaAtrasado = true;
+        valorAtrasadoEmp = totalComJuros;
+      }
+
+      totalEmprestadoAtivo += principalEmAberto;
+      totalAReceber += valorEmAberto;
+      valorTotalDivida += valorEmAberto;
       emprestimosAtivosWizard.push({
         id: emp.id,
-        data_vencimento: formatData(emp.data_vencimento),
-        principal,
+        data_vencimento: formatData(proxVencData),
+        principal: principalEmAberto,
         taxa_juros: juros,
-        totalComJuros,
+        totalComJuros: valorEmAberto,
       });
       countAbertos++;
-      
+
       if (estaAtrasado) {
-        totalAtrasado += totalComJuros;
+        totalAtrasado += valorAtrasadoEmp;
         countAtrasados++;
       }
     }
@@ -371,25 +411,60 @@ export default async function ClienteDetalhesPage({ params }: PageProps) {
         emprestimos={cliente.emprestimos.map((emp) => {
           const principal = Number(emp.valor_emprestado);
           const juros = Number(emp.taxa_juros);
+          const temParcelas = emp.parcelas && emp.parcelas.length > 0;
+          const parcelasAbertas = temParcelas ? emp.parcelas.filter((p) => p.status === "aberto") : [];
+          const proxParcelaAberta = parcelasAbertas[0];
 
-          const vencObj = new Date(emp.data_vencimento);
+          const vencRef = proxParcelaAberta ? proxParcelaAberta.data_vencimento : emp.data_vencimento;
+          const vencObj = new Date(vencRef);
           const vencimentoUTC = new Date(Date.UTC(vencObj.getUTCFullYear(), vencObj.getUTCMonth(), vencObj.getUTCDate()));
 
-          const quitado = emp.status.startsWith("quitado");
-          const venceHoje = emp.status === "ativo" && vencimentoUTC.getTime() === hojeUTC.getTime();
-          const estaAtrasado = emp.status === "ativo" && vencimentoUTC < hojeUTC;
+          const quitado = emp.status.startsWith("quitado") || (temParcelas && parcelasAbertas.length === 0);
+          const estaAtrasado =
+            !quitado &&
+            emp.status === "ativo" &&
+            (temParcelas
+              ? parcelasAbertas.some((p) => {
+                  const pvObj = new Date(p.data_vencimento);
+                  const pvUTC = new Date(Date.UTC(pvObj.getUTCFullYear(), pvObj.getUTCMonth(), pvObj.getUTCDate()));
+                  return pvUTC < hojeUTC;
+                })
+              : vencimentoUTC < hojeUTC);
+          const venceHoje =
+            !quitado &&
+            !estaAtrasado &&
+            emp.status === "ativo" &&
+            (temParcelas
+              ? parcelasAbertas.some((p) => {
+                  const pvObj = new Date(p.data_vencimento);
+                  const pvUTC = new Date(Date.UTC(pvObj.getUTCFullYear(), pvObj.getUTCMonth(), pvObj.getUTCDate()));
+                  return pvUTC.getTime() === hojeUTC.getTime();
+                })
+              : vencimentoUTC.getTime() === hojeUTC.getTime());
+
+          const totalExibido =
+            !quitado && temParcelas
+              ? parcelasAbertas.reduce((acc, p) => acc + Number(p.valor), 0)
+              : principal * (1 + juros / 100);
+          const principalExibido =
+            !quitado && temParcelas && (emp.tipo_pagamento === "parcelado" || emp.tipo_pagamento === "parcela_juros_mes")
+              ? (() => {
+                  const totalContrato = emp.parcelas.reduce((acc, p) => acc + Number(p.valor), 0);
+                  return totalContrato > 0 ? principal * (totalExibido / totalContrato) : 0;
+                })()
+              : principal;
 
           return {
             id: emp.id,
-            vencimento: formatData(emp.data_vencimento),
+            vencimento: formatData(vencRef),
             dataInicio: emp.data_inicio ? emp.data_inicio.toISOString() : null,
             situacao: quitado ? "quitado" : estaAtrasado ? "atrasado" : venceHoje ? "hoje" : "em_dia",
             status: emp.status,
             tipoPagamento: emp.tipo_pagamento,
             frequencia: emp.frequencia,
-            principal,
-            total: principal * (1 + juros / 100),
-            valorJuros: principal * (juros / 100),
+            principal: principalExibido,
+            total: totalExibido,
+            valorJuros: Math.max(0, totalExibido - principalExibido),
             taxaJuros: juros,
             taxaMulta: Number(emp.taxa_multa),
             atrasoTipo: emp.atraso_tipo,
