@@ -8,6 +8,7 @@ import { Search, Calendar, MessageCircle, ArrowUpDown, ArrowDownUp, Clock, Chevr
 import { receberSoJurosEmprestimo } from "@/app/emprestimos/[id]/actions";
 import { enviarMensagemManual, listarRespostasRapidas } from "@/app/mensagens/actions";
 import { hojeEmBrasilia } from "@/lib/dateUtils";
+import { calcularJurosAtraso } from "@/lib/jurosAtraso";
 import ClienteAvatar from "@/components/ClienteAvatar";
 import { isNetworkError, useOffline } from "@/components/offline/OfflineProvider";
 
@@ -222,13 +223,30 @@ export default function EmprestimosListWrapper({
   const [renewClosing, setRenewClosing]   = useState(false);
   const [isRenewing, setIsRenewing]       = useState(false);
   const [renewError, setRenewError]       = useState<string | null>(null);
+  const [renewDecisaoAtraso, setRenewDecisaoAtraso] = useState<"cobrar" | "abonar" | null>(null);
+  const [renewDiariaInput, setRenewDiariaInput] = useState<string>("");
   const [isPendingRenew, startRenewTransition] = useTransition();
+
+  const calcAtrasoRenew = (emp: any) => {
+    if (!emp) return { dias: 0, juros: 0 };
+    const aberta = (emp.parcelas || []).find((p: any) => p.status === "aberto");
+    if (!aberta) return { dias: 0, juros: 0 };
+    return calcularJurosAtraso(
+      { tipo: emp.atraso_tipo, valor: emp.atraso_valor },
+      Number(aberta.valor),
+      aberta.data_vencimento,
+      hojeEmBrasilia()
+    );
+  };
 
   const openRenewModal = (e: React.MouseEvent, emp: any) => {
     e.preventDefault();
     e.stopPropagation();
     setRenewError(null);
     setRenewClosing(false);
+    setRenewDecisaoAtraso(null);
+    const atr = calcAtrasoRenew(emp);
+    setRenewDiariaInput(atr.juros > 0 ? String(atr.juros) : "");
     setRenewModalEmp(emp);
   };
 
@@ -238,11 +256,20 @@ export default function EmprestimosListWrapper({
       setRenewModalEmp(null);
       setRenewClosing(false);
       setRenewError(null);
+      setRenewDecisaoAtraso(null);
+      setRenewDiariaInput("");
     }, 150);
   };
 
   const confirmRenew = (enviarWhatsapp: boolean) => {
     if (!renewModalEmp) return;
+    const atr = calcAtrasoRenew(renewModalEmp);
+    const temAtraso = atr.dias > 0 && atr.juros > 0;
+    if (temAtraso && !renewDecisaoAtraso) return;
+    const cobrarAtraso = temAtraso && renewDecisaoAtraso === "cobrar";
+    const diariaParsed = Number(String(renewDiariaInput || "0").replace(",", "."));
+    const valorDiariaCustom = cobrarAtraso && Number.isFinite(diariaParsed) && diariaParsed >= 0 ? diariaParsed : null;
+
     setIsRenewing(true);
     setRenewError(null);
     const empId = renewModalEmp.id;
@@ -254,7 +281,12 @@ export default function EmprestimosListWrapper({
         entityId: empId,
         dependsOnEntityId: renewModalEmp.pendingSync ? empId : undefined,
         label: `Renovar +30d — ${clienteNome}`,
-        payload: { emprestimoId: empId, enviarWhatsapp },
+        payload: {
+          emprestimoId: empId,
+          enviarWhatsapp,
+          cobrarJurosAtraso: cobrarAtraso,
+          valorDiariaCustom,
+        },
       });
       closeRenewModal();
     };
@@ -266,7 +298,7 @@ export default function EmprestimosListWrapper({
         return;
       }
       try {
-        const res = await receberSoJurosEmprestimo(empId, enviarWhatsapp);
+        const res = await receberSoJurosEmprestimo(empId, enviarWhatsapp, cobrarAtraso, valorDiariaCustom);
         closeRenewModal();
         if (res?.whatsappEnviado) {
           alert(`Empréstimo renovado com sucesso!\nMensagem enviada para ${clienteNome} no WhatsApp:\n\n"${res.whatsappTexto}"`);
@@ -1541,66 +1573,156 @@ export default function EmprestimosListWrapper({
             </div>
 
             {/* Body */}
-            <div className="p-6 space-y-4">
-              <p className="text-sm text-slate-700 leading-relaxed">
-                Confirmar renovação do empréstimo de{" "}
-                <span className="font-black text-slate-900">{renewModalEmp.cliente.nome}</span>?
-              </p>
-              <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-1.5 text-xs">
-                <div className="flex justify-between">
-                  <span className="text-amber-700 font-semibold">Juros recebidos agora</span>
-                  <span className="font-black text-amber-800">
-                    {formatBRL(Number(renewModalEmp.valor_emprestado) * (Number(renewModalEmp.taxa_juros) / 100))}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-600 font-semibold">Novo vencimento</span>
-                  <span className="font-black text-slate-800">+30 dias</span>
-                </div>
-              </div>
+            {(() => {
+              const atr = calcAtrasoRenew(renewModalEmp);
+              const temAtraso = atr.dias > 0 && atr.juros > 0;
+              const jurosBase = Number(renewModalEmp.valor_emprestado) * (Number(renewModalEmp.taxa_juros) / 100);
+              const diariaNum = Number(String(renewDiariaInput || "0").replace(",", "."));
+              const diariaAplicada =
+                temAtraso && renewDecisaoAtraso === "cobrar" && Number.isFinite(diariaNum) && diariaNum >= 0
+                  ? diariaNum
+                  : 0;
+              const bloqueadoSemDecisao = temAtraso && !renewDecisaoAtraso;
 
-              <p className="text-xs text-slate-600 font-semibold">
-                Deseja enviar a confirmação da renovação no WhatsApp do cliente?
-              </p>
+              return (
+                <>
+                  <div className="p-6 space-y-4 max-h-[65vh] overflow-y-auto">
+                    <p className="text-sm text-slate-700 leading-relaxed">
+                      Confirmar renovação do empréstimo de{" "}
+                      <span className="font-black text-slate-900">{renewModalEmp.cliente.nome}</span>?
+                    </p>
 
-              {renewError && (
-                <div className="flex items-start gap-2 bg-rose-50 border border-rose-200 rounded-xl p-3">
-                  <AlertCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
-                  <p className="text-xs text-rose-700 font-medium">{renewError}</p>
-                </div>
-              )}
-            </div>
+                    {temAtraso && (
+                      <div className="bg-amber-50 border border-amber-300 rounded-2xl p-3.5 space-y-2.5">
+                        <div className="flex items-start gap-2">
+                          <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                          <div className="text-xs text-amber-900 leading-snug">
+                            <span className="font-black">
+                              {atr.dias} {atr.dias === 1 ? "dia" : "dias"} de atraso
+                            </span>{" "}
+                            (multa: <strong className="font-black">{formatBRL(atr.juros)}</strong>).
+                            <div className="text-[11px] text-amber-800 mt-0.5 font-medium">
+                              O cliente pagou a diária de atraso ou você abonou?
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRenewDecisaoAtraso("cobrar");
+                              if (!renewDiariaInput) setRenewDiariaInput(String(atr.juros));
+                            }}
+                            className={`py-2 px-2.5 rounded-xl text-[11px] font-black border transition-all cursor-pointer ${
+                              renewDecisaoAtraso === "cobrar"
+                                ? "bg-amber-600 text-white border-amber-700 shadow-sm"
+                                : "bg-white text-amber-800 border-amber-200 hover:bg-amber-100"
+                            }`}
+                          >
+                            Cobrou diária
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setRenewDecisaoAtraso("abonar")}
+                            className={`py-2 px-2.5 rounded-xl text-[11px] font-black border transition-all cursor-pointer ${
+                              renewDecisaoAtraso === "abonar"
+                                ? "bg-slate-800 text-white border-slate-900 shadow-sm"
+                                : "bg-white text-slate-700 border-slate-200 hover:bg-slate-100"
+                            }`}
+                          >
+                            Abonou (R$ 0)
+                          </button>
+                        </div>
+                        {renewDecisaoAtraso === "cobrar" && (
+                          <div className="pt-1">
+                            <label className="text-[10px] font-black uppercase tracking-wider text-amber-800 block mb-1">
+                              Valor cobrado de diária (R$)
+                            </label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={renewDiariaInput}
+                              onChange={(e) => setRenewDiariaInput(e.target.value)}
+                              className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500/40"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
 
-            {/* Footer */}
-            <div className="p-5 border-t border-slate-100 bg-slate-50 flex flex-col gap-2">
-              <button
-                onClick={() => confirmRenew(true)}
-                disabled={isRenewing || isPendingRenew}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 text-xs font-black bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-md shadow-emerald-600/20 transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                {(isRenewing || isPendingRenew) ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <MessageCircle className="w-4 h-4" />
-                )}
-                <span>{(isRenewing || isPendingRenew) ? "Renovando..." : "Sim, Renovar e Enviar no WhatsApp"}</span>
-              </button>
-              <button
-                onClick={() => confirmRenew(false)}
-                disabled={isRenewing || isPendingRenew}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-black bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                <RefreshCw className="w-4 h-4 text-amber-600" />
-                <span>Não, Renovar sem Enviar no WhatsApp</span>
-              </button>
-              <button
-                onClick={closeRenewModal}
-                disabled={isRenewing}
-                className="w-full py-2 text-xs font-bold text-slate-400 hover:text-slate-600 transition-colors cursor-pointer disabled:opacity-50"
-              >
-                Cancelar
-              </button>
-            </div>
+                    <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-1.5 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-amber-700 font-semibold">Juros da renovação</span>
+                        <span className="font-black text-amber-800">{formatBRL(jurosBase)}</span>
+                      </div>
+                      {diariaAplicada > 0 && (
+                        <div className="flex justify-between">
+                          <span className="text-amber-700 font-semibold">Diária de atraso</span>
+                          <span className="font-black text-amber-700">+ {formatBRL(diariaAplicada)}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between pt-1 border-t border-amber-200/70">
+                        <span className="text-slate-700 font-black">Total recebido agora</span>
+                        <span className="font-black text-emerald-700">{formatBRL(jurosBase + diariaAplicada)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-600 font-semibold">Novo vencimento</span>
+                        <span className="font-black text-slate-800">+30 dias</span>
+                      </div>
+                    </div>
+
+                    {bloqueadoSemDecisao && (
+                      <p className="text-[11px] font-bold text-amber-700 text-center">
+                        Escolha acima se cobrou ou abonou a diária de atraso para continuar.
+                      </p>
+                    )}
+
+                    <p className="text-xs text-slate-600 font-semibold">
+                      Deseja enviar a confirmação da renovação no WhatsApp do cliente?
+                    </p>
+
+                    {renewError && (
+                      <div className="flex items-start gap-2 bg-rose-50 border border-rose-200 rounded-xl p-3">
+                        <AlertCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+                        <p className="text-xs text-rose-700 font-medium">{renewError}</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Footer */}
+                  <div className="p-5 border-t border-slate-100 bg-slate-50 flex flex-col gap-2">
+                    <button
+                      onClick={() => confirmRenew(true)}
+                      disabled={isRenewing || isPendingRenew || bloqueadoSemDecisao}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-3 text-xs font-black bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-md shadow-emerald-600/20 transition-all cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
+                    >
+                      {(isRenewing || isPendingRenew) ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <MessageCircle className="w-4 h-4" />
+                      )}
+                      <span>{(isRenewing || isPendingRenew) ? "Renovando..." : "Sim, Renovar e Enviar no WhatsApp"}</span>
+                    </button>
+                    <button
+                      onClick={() => confirmRenew(false)}
+                      disabled={isRenewing || isPendingRenew || bloqueadoSemDecisao}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-black bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl transition-all cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
+                    >
+                      <RefreshCw className="w-4 h-4 text-amber-600" />
+                      <span>Não, Renovar sem Enviar no WhatsApp</span>
+                    </button>
+                    <button
+                      onClick={closeRenewModal}
+                      disabled={isRenewing}
+                      className="w-full py-2 text-xs font-bold text-slate-400 hover:text-slate-600 transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}

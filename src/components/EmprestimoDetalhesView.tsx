@@ -119,6 +119,8 @@ export default function EmprestimoDetalhesView({
   }, []);
 
   const [renovEnviarWa, setRenovEnviarWa] = useState(true);
+  const [renovDecisaoAtraso, setRenovDecisaoAtraso] = useState<"cobrar" | "abonar" | null>(null);
+  const [renovDiariaInput, setRenovDiariaInput] = useState<string>("");
   const [renovFeedback, setRenovFeedback] = useState<{
     sucesso: boolean;
     erro?: string;
@@ -649,13 +651,32 @@ export default function EmprestimoDetalhesView({
   };
 
 
+  const atrasoRenovacao = (() => {
+    const aberta = abertas[0];
+    if (!aberta) return { dias: 0, juros: 0 };
+    return calcularJurosAtraso(
+      { tipo: emprestimo.atraso_tipo, valor: emprestimo.atraso_valor },
+      Number(aberta.valor),
+      aberta.data_vencimento,
+      hojeUTC
+    );
+  })();
+
   const receiveJuros = () => {
     setRenovFeedback(null);
     setRenovEnviarWa(true);
+    setRenovDecisaoAtraso(null);
+    setRenovDiariaInput(atrasoRenovacao.juros > 0 ? String(atrasoRenovacao.juros) : "");
     openModal("renovar_juros");
   };
 
   const executarRenovacao = (enviarWhatsapp: boolean) => {
+    const temAtraso = atrasoRenovacao.dias > 0 && atrasoRenovacao.juros > 0;
+    if (temAtraso && !renovDecisaoAtraso) return;
+    const cobrarAtraso = temAtraso && renovDecisaoAtraso === "cobrar";
+    const diariaParsed = Number(String(renovDiariaInput || "0").replace(",", "."));
+    const valorDiariaCustom = cobrarAtraso && Number.isFinite(diariaParsed) && diariaParsed >= 0 ? diariaParsed : null;
+
     setRenovFeedback(null);
     const enqueue = async () => {
       await enqueueOfflineAction({
@@ -663,7 +684,12 @@ export default function EmprestimoDetalhesView({
         entityId: emprestimo.id,
         dependsOnEntityId: emprestimo.pendingSync ? emprestimo.id : undefined,
         label: `Renovar +30d — ${emprestimo.cliente.nome}`,
-        payload: { emprestimoId: emprestimo.id, enviarWhatsapp },
+        payload: {
+          emprestimoId: emprestimo.id,
+          enviarWhatsapp,
+          cobrarJurosAtraso: cobrarAtraso,
+          valorDiariaCustom,
+        },
       });
       setRenovFeedback({
         sucesso: true,
@@ -676,7 +702,12 @@ export default function EmprestimoDetalhesView({
         return;
       }
       try {
-        const res = await receberSoJurosEmprestimo(emprestimo.id, enviarWhatsapp);
+        const res = await receberSoJurosEmprestimo(
+          emprestimo.id,
+          enviarWhatsapp,
+          cobrarAtraso,
+          valorDiariaCustom
+        );
         setRenovFeedback({
           sucesso: true,
           whatsappEnviado: res?.whatsappEnviado,
@@ -1726,75 +1757,161 @@ export default function EmprestimoDetalhesView({
               </div>
             )
           ) : (
-            <div className="space-y-4">
-              {/* Card financeiro de resumo */}
-              <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 space-y-3">
-                <div className="flex items-center justify-between text-xs pb-2 border-b border-slate-200/60">
-                  <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Juros a Receber Hoje</span>
-                  <span className="text-base font-black text-emerald-600 tabular-nums">{fmt(valorJurosCalculado)}</span>
-                </div>
-                <div className="flex items-center justify-between text-xs pb-2 border-b border-slate-200/60">
-                  <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Principal Mantido</span>
-                  <span className="text-xs font-bold text-slate-700 tabular-nums">{fmt(emprestimo.valor_emprestado)}</span>
-                </div>
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Novo Vencimento</span>
-                  <span className="inline-flex items-center gap-1 font-black text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full text-[10px]">
-                    <CalendarClock className="w-3 h-3" /> +30 dias
-                  </span>
-                </div>
-              </div>
+            (() => {
+              const temAtraso = atrasoRenovacao.dias > 0 && atrasoRenovacao.juros > 0;
+              const diariaNum = Number(String(renovDiariaInput || "0").replace(",", "."));
+              const diariaAplicada =
+                temAtraso && renovDecisaoAtraso === "cobrar" && Number.isFinite(diariaNum) && diariaNum >= 0
+                  ? diariaNum
+                  : 0;
+              const totalReceberAgora = valorJurosCalculado + diariaAplicada;
+              const bloqueadoSemDecisao = temAtraso && !renovDecisaoAtraso;
 
-              {/* Informação */}
-              <p className="text-xs text-slate-500 leading-relaxed">
-                Dar baixa no recebimento dos juros (<strong className="text-slate-700 font-bold">{fmt(valorJurosCalculado)}</strong>) e estender o vencimento do contrato por mais 30 dias.
-              </p>
+              return (
+                <div className="space-y-4">
+                  {/* Pergunta explícita de diária de atraso quando vencido */}
+                  {temAtraso && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3.5 space-y-2.5">
+                      <div className="flex items-start gap-2">
+                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                        <div className="text-xs text-amber-900 leading-snug">
+                          <span className="font-black">
+                            {atrasoRenovacao.dias} {atrasoRenovacao.dias === 1 ? "dia" : "dias"} de atraso
+                          </span>{" "}
+                          (multa calculada: <strong className="font-black">{fmt(atrasoRenovacao.juros)}</strong>).
+                          <div className="text-[11px] text-amber-800 mt-0.5 font-medium">
+                            O cliente pagou a diária de atraso ou você abonou?
+                          </div>
+                        </div>
+                      </div>
 
-              <p className="text-xs text-slate-700 font-bold">
-                Deseja enviar a confirmação da renovação no WhatsApp de {emprestimo.cliente.nome}?
-              </p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRenovDecisaoAtraso("cobrar");
+                            if (!renovDiariaInput) setRenovDiariaInput(String(atrasoRenovacao.juros));
+                          }}
+                          className={`py-2 px-2.5 rounded-xl text-[11px] font-black border transition-all cursor-pointer ${
+                            renovDecisaoAtraso === "cobrar"
+                              ? "bg-amber-600 text-white border-amber-700 shadow-sm"
+                              : "bg-white text-amber-800 border-amber-200 hover:bg-amber-100"
+                          }`}
+                        >
+                          Cobrou diária
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRenovDecisaoAtraso("abonar")}
+                          className={`py-2 px-2.5 rounded-xl text-[11px] font-black border transition-all cursor-pointer ${
+                            renovDecisaoAtraso === "abonar"
+                              ? "bg-slate-800 text-white border-slate-900 shadow-sm"
+                              : "bg-white text-slate-700 border-slate-200 hover:bg-slate-100"
+                          }`}
+                        >
+                          Abonou (R$ 0)
+                        </button>
+                      </div>
 
-              {/* Botões Diretos de Escolha: Enviar ou Não Enviar no WhatsApp */}
-              <div className="flex flex-col gap-2.5 pt-1">
-                <button
-                  type="button"
-                  onClick={() => executarRenovacao(true)}
-                  disabled={isPending}
-                  className="btn-press w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black rounded-xl transition-all flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 active:scale-[0.98] cursor-pointer disabled:opacity-50"
-                >
-                  {isPending ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Processando renovação...</span>
-                    </>
-                  ) : (
-                    <>
-                      <MessageSquare className="w-4 h-4" />
-                      <span>Sim, Renovar e Enviar no WhatsApp</span>
-                    </>
+                      {renovDecisaoAtraso === "cobrar" && (
+                        <div className="pt-1">
+                          <label className="text-[10px] font-black uppercase tracking-wider text-amber-800 block mb-1">
+                            Valor cobrado de diária (R$)
+                          </label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={renovDiariaInput}
+                            onChange={(e) => setRenovDiariaInput(e.target.value)}
+                            className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500/40"
+                          />
+                        </div>
+                      )}
+                    </div>
                   )}
-                </button>
 
-                <button
-                  type="button"
-                  onClick={() => executarRenovacao(false)}
-                  disabled={isPending}
-                  className="btn-press w-full py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 text-xs font-black rounded-xl transition-all flex items-center justify-center gap-2 active:scale-[0.98] cursor-pointer disabled:opacity-50"
-                >
-                  <CheckCircle2 className="w-4 h-4 text-slate-600" />
-                  <span>Não, Renovar sem Enviar no WhatsApp</span>
-                </button>
+                  {/* Card financeiro de resumo */}
+                  <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 space-y-3">
+                    <div className="flex items-center justify-between text-xs pb-2 border-b border-slate-200/60">
+                      <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Juros da Renovação</span>
+                      <span className="text-sm font-black text-emerald-600 tabular-nums">{fmt(valorJurosCalculado)}</span>
+                    </div>
+                    {diariaAplicada > 0 && (
+                      <div className="flex items-center justify-between text-xs pb-2 border-b border-slate-200/60">
+                        <span className="text-amber-600 font-bold uppercase tracking-wider text-[10px]">Diária de Atraso</span>
+                        <span className="text-sm font-black text-amber-600 tabular-nums">+ {fmt(diariaAplicada)}</span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between text-xs pb-2 border-b border-slate-200/60">
+                      <span className="text-slate-600 font-black uppercase tracking-wider text-[10px]">Total Recebido Hoje</span>
+                      <span className="text-base font-black text-emerald-700 tabular-nums">{fmt(totalReceberAgora)}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs pb-2 border-b border-slate-200/60">
+                      <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Principal Mantido</span>
+                      <span className="text-xs font-bold text-slate-700 tabular-nums">{fmt(emprestimo.valor_emprestado)}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Novo Vencimento</span>
+                      <span className="inline-flex items-center gap-1 font-black text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full text-[10px]">
+                        <CalendarClock className="w-3 h-3" /> +30 dias
+                      </span>
+                    </div>
+                  </div>
 
-                <button
-                  type="button"
-                  onClick={closeModal}
-                  disabled={isPending}
-                  className="w-full py-2 text-slate-400 hover:text-slate-600 text-xs font-bold transition-colors cursor-pointer text-center"
-                >
-                  Cancelar
-                </button>
-              </div>
-            </div>
+                  {bloqueadoSemDecisao && (
+                    <p className="text-[11px] font-bold text-amber-700 text-center">
+                      Selecione acima se cobrou ou abonou a diária de atraso para continuar.
+                    </p>
+                  )}
+
+                  <p className="text-xs text-slate-700 font-bold">
+                    Deseja enviar a confirmação da renovação no WhatsApp de {emprestimo.cliente.nome}?
+                  </p>
+
+                  {/* Botões Diretos de Escolha: Enviar ou Não Enviar no WhatsApp */}
+                  <div className="flex flex-col gap-2.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => executarRenovacao(true)}
+                      disabled={isPending || bloqueadoSemDecisao}
+                      className="btn-press w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black rounded-xl transition-all flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 active:scale-[0.98] cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
+                    >
+                      {isPending ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Processando renovação...</span>
+                        </>
+                      ) : (
+                        <>
+                          <MessageSquare className="w-4 h-4" />
+                          <span>Sim, Renovar e Enviar no WhatsApp</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => executarRenovacao(false)}
+                      disabled={isPending || bloqueadoSemDecisao}
+                      className="btn-press w-full py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 text-xs font-black rounded-xl transition-all flex items-center justify-center gap-2 active:scale-[0.98] cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
+                    >
+                      <CheckCircle2 className="w-4 h-4 text-slate-600" />
+                      <span>Não, Renovar sem Enviar no WhatsApp</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={closeModal}
+                      disabled={isPending}
+                      className="w-full py-2 text-slate-400 hover:text-slate-600 text-xs font-bold transition-colors cursor-pointer text-center"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </div>
+              );
+            })()
           )}
         </Modal>
       )}

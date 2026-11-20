@@ -350,7 +350,9 @@ export async function POST(request: NextRequest) {
         case "RECEBER_SO_JUROS": {
           const r = await receberSoJurosEmprestimo(
             op.payload.emprestimoId,
-            op.payload.enviarWhatsapp
+            op.payload.enviarWhatsapp,
+            op.payload.cobrarJurosAtraso ?? false,
+            op.payload.valorDiariaCustom ?? null
           );
           await recordOperationSynced(op);
           results.push({

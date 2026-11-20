@@ -11,7 +11,7 @@ export async function proxy(request: NextRequest) {
 
   // Painel do funcionário (/<slug>/cliente) e sua API têm autenticação própria (senha do funcionário).
   // Bloqueia Server Actions nessa rota para que ações do ADM não possam ser invocadas por ela.
-  const RESERVADOS = ["api", "login", "clientes", "emprestimos", "parceiros", "cobrancas", "configuracoes", "cheques", "mensagens", "perfil", "offline"];
+  const RESERVADOS = ["api", "login", "clientes", "emprestimos", "faturamento", "parceiros", "cobrancas", "configuracoes", "cheques", "mensagens", "perfil", "offline"];
   const painel = pathname.match(/^\/([^/]+)\/cliente\/?$/);
   if (painel && !RESERVADOS.includes(painel[1]) && !request.headers.has("next-action")) {
     return NextResponse.next();

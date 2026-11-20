@@ -251,7 +251,12 @@ export type OfflineOperation =
     })
   | (OfflineOperationBase & {
       type: "RECEBER_SO_JUROS";
-      payload: { emprestimoId: string; enviarWhatsapp: boolean };
+      payload: {
+        emprestimoId: string;
+        enviarWhatsapp: boolean;
+        cobrarJurosAtraso?: boolean;
+        valorDiariaCustom?: number | null;
+      };
     })
   | (OfflineOperationBase & {
       type: "RENEGOCIAR_EMPRESTIMO";

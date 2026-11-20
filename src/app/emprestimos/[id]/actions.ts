@@ -130,6 +130,7 @@ export async function payNextInstallment(emprestimoId: string, withDelay: boolea
   revalidatePath("/emprestimos");
   revalidatePath("/clientes");
   revalidatePath("/cobrancas");
+  revalidatePath("/faturamento");
   revalidatePath("/");
   return {
     success: true,
@@ -208,6 +209,7 @@ export async function payInstallmentById(parcelaId: string, withDelay: boolean, 
   revalidatePath("/emprestimos");
   revalidatePath("/clientes");
   revalidatePath("/cobrancas");
+  revalidatePath("/faturamento");
   revalidatePath("/");
   return {
     success: true,
@@ -277,6 +279,7 @@ export async function payFullLoan(emprestimoId: string, withDelay: boolean, cobr
   revalidatePath("/emprestimos");
   revalidatePath("/clientes");
   revalidatePath("/cobrancas");
+  revalidatePath("/faturamento");
   revalidatePath("/");
   return {
     success: true,
@@ -393,6 +396,7 @@ export async function renegociarEmprestimo(
   revalidatePath("/emprestimos");
   revalidatePath("/clientes");
   revalidatePath("/cobrancas");
+  revalidatePath("/faturamento");
   revalidatePath("/");
   return { success: true, ...wa };
 }
@@ -520,6 +524,7 @@ export async function reprogramarEmprestimo(
   revalidatePath("/emprestimos");
   revalidatePath("/clientes");
   revalidatePath("/cobrancas");
+  revalidatePath("/faturamento");
   revalidatePath("/");
   return { success: true, ...wa };
 }
@@ -550,11 +555,17 @@ export async function deleteLoan(id: string) {
 }
 
 // 7. Receber só os juros (Renovar +30d)
-export async function receberSoJurosEmprestimo(emprestimoId: string, enviarWhatsapp = true) {
+export async function receberSoJurosEmprestimo(
+  emprestimoId: string,
+  enviarWhatsapp = true,
+  cobrarJurosAtraso = false,
+  valorDiariaCustom?: number | null
+) {
   const hoje = hojeEmBrasilia();
   let clienteTelefone = "";
   let clienteNome = "";
   let valorJurosPago = 0;
+  let diariaAtrasoCobrada = 0;
   let novoVencimentoRenovacao: Date | null = null;
 
   await prisma.$transaction(async (tx) => {
@@ -588,18 +599,29 @@ export async function receberSoJurosEmprestimo(emprestimoId: string, enviarWhats
     // 3. Calcula juros do empréstimo (baseado no valor original emprestado)
     const valorEmprestado = Number(emprestimo.valor_emprestado);
     const taxaJuros = Number(emprestimo.taxa_juros);
-    const valorJuros = valorEmprestado * (taxaJuros / 100);
+    const valorJuros = Number((valorEmprestado * (taxaJuros / 100)).toFixed(2));
 
     if (valorJuros <= 0) {
       throw new Error("O empréstimo não possui taxa de juros configurada para calcular o recebimento.");
     }
 
-    // 4. Modifica a parcela atual para ser APENAS o valor dos juros, e marca como paga (renovação)
+    // 3b. Calcula diária de atraso se o usuário optou por cobrar na renovação
+    const atraso = jurosDaParcela(emprestimo, parcelaAtual, hoje, cobrarJurosAtraso);
+    if (cobrarJurosAtraso) {
+      if (typeof valorDiariaCustom === "number" && Number.isFinite(valorDiariaCustom) && valorDiariaCustom >= 0) {
+        diariaAtrasoCobrada = Number(valorDiariaCustom.toFixed(2));
+      } else {
+        diariaAtrasoCobrada = atraso.juros;
+      }
+    }
+
+    // 4. Modifica a parcela atual: `valor` guarda o juro puro da renovação e
+    // `valor_pago` guarda juros + diária de atraso (assim `valor_pago - valor` = diária paga a mais)
     await tx.parcela.update({
       where: { id: parcelaAtual.id },
       data: {
         valor: valorJuros,
-        valor_pago: valorJuros,
+        valor_pago: Number((valorJuros + diariaAtrasoCobrada).toFixed(2)),
         status: "pago_renovacao",
         data_pagamento: hoje,
       },
@@ -682,7 +704,7 @@ export async function receberSoJurosEmprestimo(emprestimoId: string, enviarWhats
     });
 
     // Dados para as variáveis da mensagem de renovação
-    valorJurosPago = valorJuros;
+    valorJurosPago = Number((valorJuros + diariaAtrasoCobrada).toFixed(2));
     novoVencimentoRenovacao = novoVencimento;
   });
 
@@ -705,6 +727,7 @@ export async function receberSoJurosEmprestimo(emprestimoId: string, enviarWhats
   revalidatePath("/emprestimos");
   revalidatePath("/clientes");
   revalidatePath("/cobrancas");
+  revalidatePath("/faturamento");
   revalidatePath("/");
   return {
     success: true,

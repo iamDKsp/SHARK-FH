@@ -14,6 +14,7 @@ import {
   MessageSquare,
   Shield,
   DollarSign,
+  TrendingUp,
   Cloud,
   CloudOff,
   Loader2
@@ -48,6 +49,7 @@ export default function Navbar() {
     { name: "Início", path: "/", icon: LayoutDashboard },
     { name: "Clientes", path: "/clientes", icon: Users },
     { name: "Empréstimos", path: "/emprestimos", icon: HandCoins },
+    { name: "Faturamento", path: "/faturamento", icon: TrendingUp },
     { name: "Cheques", path: "/cheques", icon: BookOpenCheck },
     { name: "Parceiros", path: "/parceiros", icon: Handshake },
     { name: "Cobranças", path: "/cobrancas", icon: MessageSquare },
@@ -136,7 +138,7 @@ export default function Navbar() {
     { name: "Início", path: "/", icon: LayoutDashboard },
     { name: "Clientes", path: "/clientes", icon: Users },
     { name: "Empréstimos", path: "/emprestimos", icon: HandCoins },
-    { name: "Parceiros", path: "/parceiros", icon: Handshake },
+    { name: "Faturamento", path: "/faturamento", icon: TrendingUp },
     { name: "Cobranças", path: "/cobrancas", icon: MessageSquare },
   ];
 
@@ -226,6 +228,13 @@ export default function Navbar() {
             <div className="md:hidden flex items-center space-x-0.5 min-[360px]:space-x-1">
               {renderStatusPill(true)}
               <NotificacoesMenu />
+              <Link 
+                href="/parceiros"
+                className="p-1.5 min-[360px]:p-2 text-emerald-200 hover:text-white active:scale-95 transition-transform"
+                title="Parceiros"
+              >
+                <Handshake className="w-5 h-5" />
+              </Link>
               <Link 
                 href="/cheques"
                 className="p-1.5 min-[360px]:p-2 text-emerald-200 hover:text-white active:scale-95 transition-transform"
