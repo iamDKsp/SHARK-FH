@@ -74,6 +74,10 @@ export default async function DashboardPage() {
   let receberSemana = 0;
   let receberMes = 0;
   let receberAno = 0;
+  let receberHojeJuros = 0;
+  let receberSemanaJuros = 0;
+  let receberMesJuros = 0;
+  let receberAnoJuros = 0;
   let receberParceiros = 0;
   let receberProprio = 0;
   const parceirosMap: Record<string, { nome: string; total: number; count: number }> = {};
@@ -205,10 +209,27 @@ export default async function DashboardPage() {
             receberProprio += valor;
           }
 
-          if (pvUTC.getTime() === hojeUTC.getTime()) receberHoje += valor;
-          if (pvUTC >= hojeUTC && pvUTC <= limiteSemana) receberSemana += valor;
-          if (pvUTC >= hojeUTC && pvUTC <= limiteMes) receberMes += valor;
-          if (pvUTC >= hojeUTC && pvUTC <= limiteAno) receberAno += valor;
+          const valorJurosOuParcela =
+            emp.tipo_pagamento === "a_vista_juros" && juros > 0
+              ? Math.min(valor, Number((principal * (juros / 100)).toFixed(2)))
+              : valor;
+
+          if (pvUTC.getTime() === hojeUTC.getTime()) {
+            receberHoje += valor;
+            receberHojeJuros += valorJurosOuParcela;
+          }
+          if (pvUTC >= hojeUTC && pvUTC <= limiteSemana) {
+            receberSemana += valor;
+            receberSemanaJuros += valorJurosOuParcela;
+          }
+          if (pvUTC >= hojeUTC && pvUTC <= limiteMes) {
+            receberMes += valor;
+            receberMesJuros += valorJurosOuParcela;
+          }
+          if (pvUTC >= hojeUTC && pvUTC <= limiteAno) {
+            receberAno += valor;
+            receberAnoJuros += valorJurosOuParcela;
+          }
 
           mesesProjecao.forEach((m) => {
             if (pvUTC.getUTCFullYear() === m.year && pvUTC.getUTCMonth() === m.month) {
@@ -229,10 +250,26 @@ export default async function DashboardPage() {
       } else {
         receberProprio += valor;
       }
-      if (vencimentoUTC.getTime() === hojeUTC.getTime()) receberHoje += valor;
-      if (vencimentoUTC >= hojeUTC && vencimentoUTC <= limiteSemana) receberSemana += valor;
-      if (vencimentoUTC >= hojeUTC && vencimentoUTC <= limiteMes) receberMes += valor;
-      if (vencimentoUTC >= hojeUTC && vencimentoUTC <= limiteAno) receberAno += valor;
+      const valorJurosOuParcela =
+        emp.tipo_pagamento === "a_vista_juros" && juros > 0
+          ? Math.min(valor, Number((principal * (juros / 100)).toFixed(2)))
+          : valor;
+      if (vencimentoUTC.getTime() === hojeUTC.getTime()) {
+        receberHoje += valor;
+        receberHojeJuros += valorJurosOuParcela;
+      }
+      if (vencimentoUTC >= hojeUTC && vencimentoUTC <= limiteSemana) {
+        receberSemana += valor;
+        receberSemanaJuros += valorJurosOuParcela;
+      }
+      if (vencimentoUTC >= hojeUTC && vencimentoUTC <= limiteMes) {
+        receberMes += valor;
+        receberMesJuros += valorJurosOuParcela;
+      }
+      if (vencimentoUTC >= hojeUTC && vencimentoUTC <= limiteAno) {
+        receberAno += valor;
+        receberAnoJuros += valorJurosOuParcela;
+      }
       mesesProjecao.forEach((m) => {
         if (vencimentoUTC.getUTCFullYear() === m.year && vencimentoUTC.getUTCMonth() === m.month) {
           m.valor += valor;
@@ -473,15 +510,18 @@ export default async function DashboardPage() {
         </div>
         <div className="grid grid-cols-1 min-[360px]:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-4 gap-3 sm:gap-4">
           {[
-            { label: "Hoje", value: receberHoje, accent: "border-l-amber-500", text: "text-amber-600" },
-            { label: "Esta semana (7d)", value: receberSemana, accent: "border-l-emerald-500", text: "text-emerald-600" },
-            { label: "No mês (30d)", value: receberMes, accent: "border-l-cyan-500", text: "text-cyan-600" },
-            { label: "No ano (365d)", value: receberAno, accent: "border-l-indigo-500", text: "text-indigo-600" },
+            { label: "Hoje", value: receberHoje, jurosParcelas: receberHojeJuros, accent: "border-l-amber-500", text: "text-amber-600" },
+            { label: "Esta semana (7d)", value: receberSemana, jurosParcelas: receberSemanaJuros, accent: "border-l-emerald-500", text: "text-emerald-600" },
+            { label: "No mês (30d)", value: receberMes, jurosParcelas: receberMesJuros, accent: "border-l-cyan-500", text: "text-cyan-600" },
+            { label: "No ano (365d)", value: receberAno, jurosParcelas: receberAnoJuros, accent: "border-l-indigo-500", text: "text-indigo-600" },
           ].map((item, idx) => (
             <div key={idx} className={`bg-white card-accent border border-zinc-200 rounded-2xl p-4 sm:p-5 shadow-sm border-l-4 ${item.accent} hover:shadow-md transition-all`}>
               <span className="text-xs sm:text-sm font-black uppercase tracking-widest text-zinc-400">{item.label}</span>
               <div className={`text-lg sm:text-2xl font-black mt-2 leading-none break-words ${item.text}`}>
                 {formatBRL(item.value)}
+              </div>
+              <div className="mt-2 text-[11px] sm:text-xs text-zinc-400">
+                Só juros/parcelas: <span className="font-bold text-zinc-600">{formatBRL(item.jurosParcelas)}</span>
               </div>
             </div>
           ))}
