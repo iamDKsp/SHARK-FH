@@ -256,6 +256,8 @@ export type OfflineOperation =
         enviarWhatsapp: boolean;
         cobrarJurosAtraso?: boolean;
         valorDiariaCustom?: number | null;
+        novaDataVencimento?: string | null;
+        atualizarFrequencia?: string | null;
       };
     })
   | (OfflineOperationBase & {
@@ -291,7 +293,12 @@ export type OfflineOperation =
         clienteId: string;
         ids: string[];
         acao: "excluir" | "renovar" | "reprogramar" | "quitar";
-        opcoes: { novaData?: string; cobrarJurosAtraso?: boolean; enviarWhatsapp?: boolean };
+        opcoes: {
+          novaData?: string;
+          cobrarJurosAtraso?: boolean;
+          enviarWhatsapp?: boolean;
+          modoRenovacao?: "frequencia" | "semanal" | "quinzenal" | "mensal" | "data";
+        };
       };
     })
   | (OfflineOperationBase & { type: "CREATE_CHEQUE"; payload: CreateChequePayload })

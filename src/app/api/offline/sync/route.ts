@@ -352,7 +352,9 @@ export async function POST(request: NextRequest) {
             op.payload.emprestimoId,
             op.payload.enviarWhatsapp,
             op.payload.cobrarJurosAtraso ?? false,
-            op.payload.valorDiariaCustom ?? null
+            op.payload.valorDiariaCustom ?? null,
+            op.payload.novaDataVencimento ?? null,
+            op.payload.atualizarFrequencia ?? null
           );
           await recordOperationSynced(op);
           results.push({

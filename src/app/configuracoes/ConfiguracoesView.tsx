@@ -129,7 +129,7 @@ export default function ConfiguracoesView({ initialConfig }: Props) {
                 </span>
               </div>
               <p className="text-sm text-slate-500 leading-relaxed pt-1">
-                <strong>Quando desabilitado:</strong> Ao clicar em <em>"Receber só os juros (renovar +30d)"</em>, o sistema renova a parcela e envia a confirmação no WhatsApp automaticamente.
+                <strong>Quando desabilitado:</strong> Ao clicar em <em>"Receber só os juros (renovar)"</em>, o sistema renova a parcela e envia a confirmação no WhatsApp automaticamente.
               </p>
               <p className="text-sm text-slate-500 leading-relaxed">
                 <strong>Quando habilitado:</strong> O sistema exibirá um diálogo perguntando se você deseja ou não disparar o comprovante para o WhatsApp do cliente antes de concluir a renovação.

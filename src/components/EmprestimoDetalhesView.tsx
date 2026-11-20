@@ -24,6 +24,12 @@ import { hojeEmBrasilia } from "@/lib/dateUtils";
 import { calcularJurosAtraso, descreverRegraAtraso, regraAtiva } from "@/lib/jurosAtraso";
 import { baixarCronogramaPdfCliente, obterCronogramaPdfBase64 } from "@/lib/cronogramaPdf";
 import { isNetworkError, useOffline } from "@/components/offline/OfflineProvider";
+import RenovacaoDataSelector, {
+  criarEstadoRenovacaoInicial,
+  extrairParamsRenovacao,
+  type RenovacaoDataState,
+} from "@/components/RenovacaoDataSelector";
+import { formatarDataBR, labelPrazoCurto } from "@/lib/renovacao";
 
 interface Cliente { id: string; nome: string; telefone: string; blacklist: boolean; foto_url: string | null; }
 interface Parcela { id: string; numero: number; valor: number; data_vencimento: any; status: string; data_pagamento: any; }
@@ -121,12 +127,16 @@ export default function EmprestimoDetalhesView({
   const [renovEnviarWa, setRenovEnviarWa] = useState(true);
   const [renovDecisaoAtraso, setRenovDecisaoAtraso] = useState<"cobrar" | "abonar" | null>(null);
   const [renovDiariaInput, setRenovDiariaInput] = useState<string>("");
+  const [renovData, setRenovData] = useState<RenovacaoDataState>(() =>
+    criarEstadoRenovacaoInicial(emprestimo.data_vencimento, emprestimo.frequencia)
+  );
   const [renovFeedback, setRenovFeedback] = useState<{
     sucesso: boolean;
     erro?: string;
     whatsappEnviado?: boolean;
     whatsappErro?: string;
     whatsappTexto?: string;
+    novoVencimento?: string;
   } | null>(null);
 
   // ── Data Prevista de Pagamento ──
@@ -667,15 +677,19 @@ export default function EmprestimoDetalhesView({
     setRenovEnviarWa(true);
     setRenovDecisaoAtraso(null);
     setRenovDiariaInput(atrasoRenovacao.juros > 0 ? String(atrasoRenovacao.juros) : "");
+    const vencBase = abertas[0]?.data_vencimento ?? emprestimo.data_vencimento;
+    setRenovData(criarEstadoRenovacaoInicial(vencBase, emprestimo.frequencia));
     openModal("renovar_juros");
   };
 
   const executarRenovacao = (enviarWhatsapp: boolean) => {
     const temAtraso = atrasoRenovacao.dias > 0 && atrasoRenovacao.juros > 0;
     if (temAtraso && !renovDecisaoAtraso) return;
+    if (!renovData.novaData) return;
     const cobrarAtraso = temAtraso && renovDecisaoAtraso === "cobrar";
     const diariaParsed = Number(String(renovDiariaInput || "0").replace(",", "."));
     const valorDiariaCustom = cobrarAtraso && Number.isFinite(diariaParsed) && diariaParsed >= 0 ? diariaParsed : null;
+    const { novaDataVencimento, atualizarFrequencia } = extrairParamsRenovacao(renovData, emprestimo.frequencia);
 
     setRenovFeedback(null);
     const enqueue = async () => {
@@ -683,17 +697,20 @@ export default function EmprestimoDetalhesView({
         type: "RECEBER_SO_JUROS",
         entityId: emprestimo.id,
         dependsOnEntityId: emprestimo.pendingSync ? emprestimo.id : undefined,
-        label: `Renovar +30d — ${emprestimo.cliente.nome}`,
+        label: `Renovar (${formatarDataBR(renovData.novaData)}) — ${emprestimo.cliente.nome}`,
         payload: {
           emprestimoId: emprestimo.id,
           enviarWhatsapp,
           cobrarJurosAtraso: cobrarAtraso,
           valorDiariaCustom,
+          novaDataVencimento,
+          atualizarFrequencia,
         },
       });
       setRenovFeedback({
         sucesso: true,
         whatsappEnviado: false,
+        novoVencimento: renovData.novaData,
       });
     };
     startTransition(async () => {
@@ -706,13 +723,16 @@ export default function EmprestimoDetalhesView({
           emprestimo.id,
           enviarWhatsapp,
           cobrarAtraso,
-          valorDiariaCustom
+          valorDiariaCustom,
+          novaDataVencimento,
+          atualizarFrequencia
         );
         setRenovFeedback({
           sucesso: true,
           whatsappEnviado: res?.whatsappEnviado,
           whatsappErro: res?.whatsappErro,
           whatsappTexto: res?.whatsappTexto,
+          novoVencimento: res?.novoVencimento || renovData.novaData,
         });
       } catch (err: any) {
         if (isNetworkError(err)) {
@@ -1521,7 +1541,7 @@ export default function EmprestimoDetalhesView({
                   {isAVista && (
                     valorJurosCalculado > 0 ? (
                       <button onClick={receiveJuros} disabled={isPending} className="flex items-center justify-center gap-1.5 w-full py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-xs font-black rounded-xl transition-all active:scale-[0.98] shadow-sm cursor-pointer">
-                        <RefreshCw className="w-4 h-4" /> Receber só os juros — {fmt(valorJurosCalculado)} (renovar +30d)
+                        <RefreshCw className="w-4 h-4" /> Receber só os juros — {fmt(valorJurosCalculado)} (renovar {labelPrazoCurto(emprestimo.frequencia)})
                       </button>
                     ) : (
                       <Link href={`/emprestimos/${emprestimo.id}/editar`} className="flex items-center justify-center gap-1.5 w-full py-2.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-xs font-black rounded-xl transition-all active:scale-[0.98] shadow-sm">
@@ -1674,7 +1694,7 @@ export default function EmprestimoDetalhesView({
             if (isPending) return;
             closeModal();
           }} 
-          title={renovFeedback ? (renovFeedback.sucesso ? "Renovação Concluída" : "Aviso na Renovação") : "Renovar Empréstimo (+30 dias)"} 
+          title={renovFeedback ? (renovFeedback.sucesso ? "Renovação Concluída" : "Aviso na Renovação") : "Renovar Empréstimo"} 
           subtitle={`Cliente: ${emprestimo.cliente.nome}`}
           maxWidth="max-w-md"
         >
@@ -1687,7 +1707,8 @@ export default function EmprestimoDetalhesView({
                 <div>
                   <h4 className="text-base font-black text-slate-900 tracking-tight">Empréstimo Renovado!</h4>
                   <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                    O recebimento dos juros de <strong className="text-emerald-700">{fmt(valorJurosCalculado)}</strong> foi confirmado e o vencimento foi estendido por mais 30 dias.
+                    O recebimento dos juros de <strong className="text-emerald-700">{fmt(valorJurosCalculado)}</strong> foi confirmado e o vencimento foi estendido para{" "}
+                    <strong className="text-slate-800">{formatarDataBR(renovFeedback.novoVencimento || renovData.novaData)}</strong>.
                   </p>
                 </div>
 
@@ -1847,17 +1868,20 @@ export default function EmprestimoDetalhesView({
                       <span className="text-slate-600 font-black uppercase tracking-wider text-[10px]">Total Recebido Hoje</span>
                       <span className="text-base font-black text-emerald-700 tabular-nums">{fmt(totalReceberAgora)}</span>
                     </div>
-                    <div className="flex items-center justify-between text-xs pb-2 border-b border-slate-200/60">
+                    <div className="flex items-center justify-between text-xs">
                       <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Principal Mantido</span>
                       <span className="text-xs font-bold text-slate-700 tabular-nums">{fmt(emprestimo.valor_emprestado)}</span>
                     </div>
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Novo Vencimento</span>
-                      <span className="inline-flex items-center gap-1 font-black text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full text-[10px]">
-                        <CalendarClock className="w-3 h-3" /> +30 dias
-                      </span>
-                    </div>
                   </div>
+
+                  {/* Seletor de prazo / nova data de vencimento */}
+                  <RenovacaoDataSelector
+                    vencimentoAtual={abertas[0]?.data_vencimento ?? emprestimo.data_vencimento}
+                    frequenciaAtual={emprestimo.frequencia}
+                    value={renovData}
+                    onChange={setRenovData}
+                    disabled={isPending}
+                  />
 
                   {bloqueadoSemDecisao && (
                     <p className="text-[11px] font-bold text-amber-700 text-center">
@@ -1874,7 +1898,7 @@ export default function EmprestimoDetalhesView({
                     <button
                       type="button"
                       onClick={() => executarRenovacao(true)}
-                      disabled={isPending || bloqueadoSemDecisao}
+                      disabled={isPending || bloqueadoSemDecisao || !renovData.novaData}
                       className="btn-press w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black rounded-xl transition-all flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 active:scale-[0.98] cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
                     >
                       {isPending ? (
@@ -1893,7 +1917,7 @@ export default function EmprestimoDetalhesView({
                     <button
                       type="button"
                       onClick={() => executarRenovacao(false)}
-                      disabled={isPending || bloqueadoSemDecisao}
+                      disabled={isPending || bloqueadoSemDecisao || !renovData.novaData}
                       className="btn-press w-full py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 text-xs font-black rounded-xl transition-all flex items-center justify-center gap-2 active:scale-[0.98] cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
                     >
                       <CheckCircle2 className="w-4 h-4 text-slate-600" />

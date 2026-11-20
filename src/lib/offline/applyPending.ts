@@ -1,3 +1,4 @@
+import { calcularProximaDataRenovacao, parseIsoDateUTC } from "@/lib/renovacao";
 import type {
   CachedCheque,
   CachedCliente,
@@ -174,8 +175,11 @@ export function applyPendingToEmprestimos(
           const aberta = cur.parcelas.find((p) => p.status === "aberto");
           if (aberta) {
             const juros = cur.valor_emprestado * (cur.taxa_juros / 100);
-            const dt = new Date(aberta.data_vencimento);
-            dt.setUTCMonth(dt.getUTCMonth() + 1);
+            const dtCustom = op.payload.novaDataVencimento
+              ? parseIsoDateUTC(op.payload.novaDataVencimento)
+              : null;
+            const freqEfetiva = op.payload.atualizarFrequencia || cur.frequencia;
+            const dt = dtCustom ?? calcularProximaDataRenovacao(aberta.data_vencimento, freqEfetiva);
             aberta.status = "pago_renovacao";
             aberta.valor_pago = juros;
             aberta.data_pagamento = new Date(op.createdAt).toISOString();
@@ -190,6 +194,9 @@ export function applyPendingToEmprestimos(
               data_pagamento: null,
             });
             cur.data_vencimento = dt.toISOString();
+            if (op.payload.atualizarFrequencia) {
+              cur.frequencia = op.payload.atualizarFrequencia;
+            }
           }
           cur.pendingSync = true;
           cur.pendingActionLabel = op.label;

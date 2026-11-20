@@ -28,6 +28,12 @@ import {
 
 import { hojeEmBrasilia } from "@/lib/dateUtils";
 import { calcularJurosAtraso, descreverRegraAtraso } from "@/lib/jurosAtraso";
+import RenovacaoDataSelector, {
+  criarEstadoRenovacaoInicial,
+  extrairParamsRenovacao,
+  type RenovacaoDataState,
+} from "@/components/RenovacaoDataSelector";
+import { formatarDataBR } from "@/lib/renovacao";
 import { formatBRL, formatData, isParcelaUnica, type Parcela, type TipoAcaoEmprestimo } from "./tipos";
 
 interface AcaoEmprestimoModalProps {
@@ -64,6 +70,11 @@ export default function AcaoEmprestimoModal({
   const [enviarWa, setEnviarWa] = useState(true);
   const [cobrarJurosAtraso, setCobrarJurosAtraso] = useState(true);
 
+  // Renovar
+  const [renovData, setRenovData] = useState<RenovacaoDataState>(() =>
+    criarEstadoRenovacaoInicial(p.data_vencimento, emp.frequencia)
+  );
+
   // Reprogramar
   const [novaData, setNovaData] = useState("");
   const [freqReprog, setFreqReprog] = useState(emp.frequencia || "mensal");
@@ -96,7 +107,7 @@ export default function AcaoEmprestimoModal({
 
   const titulos: Record<TipoAcaoEmprestimo, { titulo: string; subtitulo: string }> = {
     renovar: {
-      titulo: "Renovar Empréstimo (+30 dias)",
+      titulo: "Renovar Empréstimo",
       subtitulo: `Receber só os juros de ${cliente.nome}`,
     },
     quitar: {
@@ -132,13 +143,26 @@ export default function AcaoEmprestimoModal({
 
   const handleConfirmarRenovacao = (enviarWhatsapp = enviarWa) => {
     setErro(null);
+    if (!renovData.novaData) {
+      setErro("Informe a nova data de vencimento.");
+      return;
+    }
+    const { novaDataVencimento, atualizarFrequencia } = extrairParamsRenovacao(renovData, emp.frequencia);
     startTransition(async () => {
       try {
-        await receberSoJurosEmprestimo(emp.id, enviarWhatsapp);
+        const res = await receberSoJurosEmprestimo(
+          emp.id,
+          enviarWhatsapp,
+          false,
+          null,
+          novaDataVencimento,
+          atualizarFrequencia
+        );
+        const dataFinalBr = formatarDataBR(res?.novoVencimento || renovData.novaData);
         onSuccess(
           enviarWhatsapp
-            ? `Empréstimo de ${cliente.nome.split(" ")[0]} renovado e aviso enviado no WhatsApp!`
-            : `Empréstimo de ${cliente.nome.split(" ")[0]} renovado (sem envio no WhatsApp)!`
+            ? `Empréstimo de ${cliente.nome.split(" ")[0]} renovado para ${dataFinalBr} e aviso enviado no WhatsApp!`
+            : `Empréstimo de ${cliente.nome.split(" ")[0]} renovado para ${dataFinalBr} (sem envio no WhatsApp)!`
         );
       } catch (err: any) {
         setErro(err?.message || "Erro ao renovar empréstimo.");
@@ -288,7 +312,7 @@ export default function AcaoEmprestimoModal({
             </div>
           )}
 
-          {/* ── 1. RENOVAR (+30 DIAS) ── */}
+          {/* ── 1. RENOVAR ── */}
           {acao === "renovar" && (
             <div className="space-y-4">
               <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 space-y-3">
@@ -300,7 +324,7 @@ export default function AcaoEmprestimoModal({
                     {formatBRL(valorJurosRenovacao)}
                   </span>
                 </div>
-                <div className="flex items-center justify-between text-xs pb-2 border-b border-slate-200/60">
+                <div className="flex items-center justify-between text-xs">
                   <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">
                     Principal Mantido
                   </span>
@@ -308,20 +332,21 @@ export default function AcaoEmprestimoModal({
                     {formatBRL(emp.valor_emprestado)}
                   </span>
                 </div>
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">
-                    Novo Vencimento
-                  </span>
-                  <span className="inline-flex items-center gap-1 font-black text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full text-[10px]">
-                    <CalendarClock className="w-3 h-3" /> +30 dias
-                  </span>
-                </div>
               </div>
+
+              <RenovacaoDataSelector
+                vencimentoAtual={p.data_vencimento}
+                frequenciaAtual={emp.frequencia}
+                value={renovData}
+                onChange={setRenovData}
+                disabled={isPending}
+              />
 
               <p className="text-xs text-slate-500 leading-relaxed">
                 Confirma o recebimento apenas dos juros (
-                <strong className="text-slate-700">{formatBRL(valorJurosRenovacao)}</strong>) e prorroga o
-                vencimento do contrato por mais 30 dias.
+                <strong className="text-slate-700">{formatBRL(valorJurosRenovacao)}</strong>) e define o novo
+                vencimento para{" "}
+                <strong className="text-slate-700">{formatarDataBR(renovData.novaData) || "—"}</strong>.
               </p>
 
               <p className="text-xs text-slate-700 font-bold">
@@ -332,7 +357,7 @@ export default function AcaoEmprestimoModal({
                 <button
                   type="button"
                   onClick={() => handleConfirmarRenovacao(true)}
-                  disabled={isPending}
+                  disabled={isPending || !renovData.novaData}
                   className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black rounded-xl transition-all flex items-center justify-center gap-2 shadow-sm cursor-pointer disabled:opacity-60"
                 >
                   {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageSquare className="w-4 h-4" />}
@@ -341,7 +366,7 @@ export default function AcaoEmprestimoModal({
                 <button
                   type="button"
                   onClick={() => handleConfirmarRenovacao(false)}
-                  disabled={isPending}
+                  disabled={isPending || !renovData.novaData}
                   className="w-full py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 text-xs font-black rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
                 >
                   <RefreshCw className="w-4 h-4 text-slate-600" />

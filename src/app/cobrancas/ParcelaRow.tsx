@@ -23,6 +23,7 @@ import {
   Wallet,
 } from "lucide-react";
 import { linkWhatsapp } from "@/lib/mensagens/render";
+import { labelPrazoCurto } from "@/lib/renovacao";
 import ClienteAvatar from "@/components/ClienteAvatar";
 import {
   formatBRL,
@@ -183,7 +184,7 @@ function MenuLinha({
             {podeRenovar && (
               <button role="menuitem" type="button" onClick={() => disparar("renovar")} className={itemCls}>
                 <RefreshCw className="w-4 h-4 text-amber-500 shrink-0" />
-                <span className="flex-1 truncate">Renovação (+30d)</span>
+                <span className="flex-1 truncate">Renovação ({labelPrazoCurto(p.emprestimo.frequencia)})</span>
                 <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-md tabular-nums">
                   {formatBRL(valorJuros)}
                 </span>

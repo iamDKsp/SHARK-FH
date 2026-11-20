@@ -11,6 +11,12 @@ import { hojeEmBrasilia } from "@/lib/dateUtils";
 import { calcularJurosAtraso } from "@/lib/jurosAtraso";
 import ClienteAvatar from "@/components/ClienteAvatar";
 import { isNetworkError, useOffline } from "@/components/offline/OfflineProvider";
+import RenovacaoDataSelector, {
+  criarEstadoRenovacaoInicial,
+  extrairParamsRenovacao,
+  type RenovacaoDataState,
+} from "@/components/RenovacaoDataSelector";
+import { formatarDataBR, labelPrazoRenovacao } from "@/lib/renovacao";
 
 interface Cliente {
   id: string;
@@ -225,6 +231,7 @@ export default function EmprestimosListWrapper({
   const [renewError, setRenewError]       = useState<string | null>(null);
   const [renewDecisaoAtraso, setRenewDecisaoAtraso] = useState<"cobrar" | "abonar" | null>(null);
   const [renewDiariaInput, setRenewDiariaInput] = useState<string>("");
+  const [renewData, setRenewData] = useState<RenovacaoDataState | null>(null);
   const [isPendingRenew, startRenewTransition] = useTransition();
 
   const calcAtrasoRenew = (emp: any) => {
@@ -247,6 +254,8 @@ export default function EmprestimosListWrapper({
     setRenewDecisaoAtraso(null);
     const atr = calcAtrasoRenew(emp);
     setRenewDiariaInput(atr.juros > 0 ? String(atr.juros) : "");
+    const aberta = (emp.parcelas || []).find((p: any) => p.status === "aberto");
+    setRenewData(criarEstadoRenovacaoInicial(aberta?.data_vencimento ?? emp.data_vencimento, emp.frequencia));
     setRenewModalEmp(emp);
   };
 
@@ -258,17 +267,19 @@ export default function EmprestimosListWrapper({
       setRenewError(null);
       setRenewDecisaoAtraso(null);
       setRenewDiariaInput("");
+      setRenewData(null);
     }, 150);
   };
 
   const confirmRenew = (enviarWhatsapp: boolean) => {
-    if (!renewModalEmp) return;
+    if (!renewModalEmp || !renewData?.novaData) return;
     const atr = calcAtrasoRenew(renewModalEmp);
     const temAtraso = atr.dias > 0 && atr.juros > 0;
     if (temAtraso && !renewDecisaoAtraso) return;
     const cobrarAtraso = temAtraso && renewDecisaoAtraso === "cobrar";
     const diariaParsed = Number(String(renewDiariaInput || "0").replace(",", "."));
     const valorDiariaCustom = cobrarAtraso && Number.isFinite(diariaParsed) && diariaParsed >= 0 ? diariaParsed : null;
+    const { novaDataVencimento, atualizarFrequencia } = extrairParamsRenovacao(renewData, renewModalEmp.frequencia);
 
     setIsRenewing(true);
     setRenewError(null);
@@ -280,12 +291,14 @@ export default function EmprestimosListWrapper({
         type: "RECEBER_SO_JUROS",
         entityId: empId,
         dependsOnEntityId: renewModalEmp.pendingSync ? empId : undefined,
-        label: `Renovar +30d — ${clienteNome}`,
+        label: `Renovar (${formatarDataBR(renewData.novaData)}) — ${clienteNome}`,
         payload: {
           emprestimoId: empId,
           enviarWhatsapp,
           cobrarJurosAtraso: cobrarAtraso,
           valorDiariaCustom,
+          novaDataVencimento,
+          atualizarFrequencia,
         },
       });
       closeRenewModal();
@@ -298,7 +311,14 @@ export default function EmprestimosListWrapper({
         return;
       }
       try {
-        const res = await receberSoJurosEmprestimo(empId, enviarWhatsapp, cobrarAtraso, valorDiariaCustom);
+        const res = await receberSoJurosEmprestimo(
+          empId,
+          enviarWhatsapp,
+          cobrarAtraso,
+          valorDiariaCustom,
+          novaDataVencimento,
+          atualizarFrequencia
+        );
         closeRenewModal();
         if (res?.whatsappEnviado) {
           alert(`Empréstimo renovado com sucesso!\nMensagem enviada para ${clienteNome} no WhatsApp:\n\n"${res.whatsappTexto}"`);
@@ -853,7 +873,7 @@ export default function EmprestimosListWrapper({
             {!isQuitado && emp.isAVista && emp.valorJuros > 0 && (
               <button
                 onClick={(e) => openRenewModal(e, emp)}
-                title="Renovar empréstimo (+30 dias)"
+                title={`Renovar empréstimo (${labelPrazoRenovacao(emp.frequencia)})`}
                 className="p-2.5 sm:p-3 bg-slate-100 text-slate-400 rounded-xl hover:bg-amber-500 hover:text-white transition-all shadow-sm shrink-0 group-hover:scale-105 active:scale-90 z-20 cursor-pointer"
               >
                 <RefreshCw className="w-4 h-4 sm:w-5 sm:h-5 pointer-events-none" />
@@ -1560,7 +1580,7 @@ export default function EmprestimosListWrapper({
                 </div>
                 <div>
                   <h3 className="font-black text-slate-900 text-sm">Renovar Empréstimo</h3>
-                  <p className="text-xs text-slate-500 mt-0.5">Receber juros e prorrogar +30 dias</p>
+                  <p className="text-xs text-slate-500 mt-0.5">Receber juros e definir novo vencimento</p>
                 </div>
               </div>
               <button
@@ -1666,11 +1686,20 @@ export default function EmprestimosListWrapper({
                         <span className="text-slate-700 font-black">Total recebido agora</span>
                         <span className="font-black text-emerald-700">{formatBRL(jurosBase + diariaAplicada)}</span>
                       </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-600 font-semibold">Novo vencimento</span>
-                        <span className="font-black text-slate-800">+30 dias</span>
-                      </div>
                     </div>
+
+                    {renewData && (
+                      <RenovacaoDataSelector
+                        vencimentoAtual={
+                          (renewModalEmp.parcelas || []).find((p: any) => p.status === "aberto")?.data_vencimento ??
+                          renewModalEmp.data_vencimento
+                        }
+                        frequenciaAtual={renewModalEmp.frequencia}
+                        value={renewData}
+                        onChange={setRenewData}
+                        disabled={isRenewing || isPendingRenew}
+                      />
+                    )}
 
                     {bloqueadoSemDecisao && (
                       <p className="text-[11px] font-bold text-amber-700 text-center">
@@ -1694,7 +1723,7 @@ export default function EmprestimosListWrapper({
                   <div className="p-5 border-t border-slate-100 bg-slate-50 flex flex-col gap-2">
                     <button
                       onClick={() => confirmRenew(true)}
-                      disabled={isRenewing || isPendingRenew || bloqueadoSemDecisao}
+                      disabled={isRenewing || isPendingRenew || bloqueadoSemDecisao || !renewData?.novaData}
                       className="w-full flex items-center justify-center gap-2 px-4 py-3 text-xs font-black bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-md shadow-emerald-600/20 transition-all cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
                     >
                       {(isRenewing || isPendingRenew) ? (
@@ -1706,7 +1735,7 @@ export default function EmprestimosListWrapper({
                     </button>
                     <button
                       onClick={() => confirmRenew(false)}
-                      disabled={isRenewing || isPendingRenew || bloqueadoSemDecisao}
+                      disabled={isRenewing || isPendingRenew || bloqueadoSemDecisao || !renewData?.novaData}
                       className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-black bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl transition-all cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
                     >
                       <RefreshCw className="w-4 h-4 text-amber-600" />

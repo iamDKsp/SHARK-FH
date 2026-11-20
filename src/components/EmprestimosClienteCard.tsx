@@ -61,7 +61,7 @@ const badgeClasses: Record<EmprestimoClienteItem["situacao"], { cls: string; lab
 const acoes: {
   id: AcaoEmMassa; titulo: string; descricao: string; icone: React.ReactNode; cor: string; botao: string;
 }[] = [
-  { id: "renovar", titulo: "Renovar", descricao: "Recebe só os juros e renova +30 dias (empréstimos à vista).", icone: <RefreshCw className="w-5 h-5" />, cor: "text-amber-600 bg-amber-50", botao: "bg-amber-500 hover:bg-amber-600" },
+  { id: "renovar", titulo: "Renovar", descricao: "Recebe só os juros e renova o vencimento (empréstimos à vista).", icone: <RefreshCw className="w-5 h-5" />, cor: "text-amber-600 bg-amber-50", botao: "bg-amber-500 hover:bg-amber-600" },
   { id: "reprogramar", titulo: "Reprogramar", descricao: "Move todos para uma mesma data de vencimento.", icone: <CalendarClock className="w-5 h-5" />, cor: "text-blue-600 bg-blue-50", botao: "bg-blue-600 hover:bg-blue-700" },
   { id: "quitar", titulo: "Quitar", descricao: "Quita todos os selecionados de uma vez.", icone: <CheckCircle2 className="w-5 h-5" />, cor: "text-emerald-600 bg-emerald-50", botao: "bg-emerald-600 hover:bg-emerald-700" },
   { id: "excluir", titulo: "Excluir", descricao: "Apaga os empréstimos selecionados. Não dá para desfazer.", icone: <Trash2 className="w-5 h-5" />, cor: "text-rose-600 bg-rose-50", botao: "bg-rose-600 hover:bg-rose-700" },
@@ -82,6 +82,7 @@ export default function EmprestimosClienteCard({
   // Modal: null = fechado | "menu" = escolhendo a ação | "pdf" = opções de baixar/enviar PDF | AcaoEmMassa = confirmando
   const [modal, setModal] = useState<null | "menu" | "pdf" | AcaoEmMassa>(null);
   const [novaData, setNovaData] = useState("");
+  const [modoRenovacao, setModoRenovacao] = useState<"frequencia" | "semanal" | "quinzenal" | "mensal" | "data">("frequencia");
   const [cobrarJuros, setCobrarJuros] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
   const [resultado, setResultado] = useState<ResultadoEmMassa | null>(null);
@@ -317,7 +318,7 @@ export default function EmprestimosClienteCard({
 
   const confirmar = (acao: AcaoEmMassa, enviarWhatsapp = false) => {
     setErro(null);
-    if (acao === "reprogramar" && !novaData) {
+    if ((acao === "reprogramar" || (acao === "renovar" && modoRenovacao === "data")) && !novaData) {
       setErro("Escolha a nova data de vencimento.");
       return;
     }
@@ -342,6 +343,7 @@ export default function EmprestimosClienteCard({
             novaData: novaData || undefined,
             cobrarJurosAtraso: cobrarJuros,
             enviarWhatsapp,
+            ...(acao === "renovar" ? { modoRenovacao } : {}),
           },
         },
       });
@@ -360,6 +362,7 @@ export default function EmprestimosClienteCard({
           novaData: novaData || undefined,
           cobrarJurosAtraso: cobrarJuros,
           enviarWhatsapp,
+          ...(acao === "renovar" ? { modoRenovacao } : {}),
         });
         setResultado(res);
       } catch (err: unknown) {
@@ -873,13 +876,51 @@ export default function EmprestimosClienteCard({
                   )}
 
                   {acaoAtual.id === "renovar" ? (
-                    <div className="space-y-2 pt-1">
+                    <div className="space-y-3 pt-1">
+                      <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2.5">
+                        <label className="block text-[10px] font-black uppercase tracking-wider text-slate-500">
+                          Prazo / Novo vencimento
+                        </label>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          {[
+                            { id: "frequencia", label: "Padrão de cada contrato" },
+                            { id: "quinzenal", label: "+15 dias (Quinzenal)" },
+                            { id: "mensal", label: "+30 dias (Mensal)" },
+                            { id: "semanal", label: "+7 dias (Semanal)" },
+                            { id: "data", label: "Data específica" },
+                          ].map((opt) => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => setModoRenovacao(opt.id as typeof modoRenovacao)}
+                              className={`py-2 px-2.5 rounded-lg text-[11px] font-bold border transition-all cursor-pointer text-center ${
+                                opt.id === "frequencia" ? "col-span-2" : ""
+                              } ${
+                                modoRenovacao === opt.id
+                                  ? "bg-amber-500 text-white border-amber-600 shadow-sm"
+                                  : "bg-white text-slate-700 border-slate-200 hover:bg-amber-50/50"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                        {modoRenovacao === "data" && (
+                          <input
+                            type="date"
+                            value={novaData}
+                            onChange={(e) => setNovaData(e.target.value)}
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                          />
+                        )}
+                      </div>
+
                       <p className="text-xs font-bold text-slate-700">
                         Deseja enviar a confirmação da renovação no WhatsApp do cliente?
                       </p>
                       <button
                         onClick={() => confirmar(acaoAtual.id, true)}
-                        disabled={isPending}
+                        disabled={isPending || (modoRenovacao === "data" && !novaData)}
                         className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-bold disabled:opacity-60 flex items-center justify-center gap-2 cursor-pointer"
                       >
                         {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
@@ -887,7 +928,7 @@ export default function EmprestimosClienteCard({
                       </button>
                       <button
                         onClick={() => confirmar(acaoAtual.id, false)}
-                        disabled={isPending}
+                        disabled={isPending || (modoRenovacao === "data" && !novaData)}
                         className="w-full py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 text-xs sm:text-sm font-bold disabled:opacity-60 flex items-center justify-center gap-2 cursor-pointer"
                       >
                         <RefreshCw className="w-4 h-4 text-amber-600" />

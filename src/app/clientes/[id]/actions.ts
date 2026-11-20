@@ -21,12 +21,14 @@ export interface ResultadoEmMassa {
 }
 
 interface OpcoesEmMassa {
-  /** yyyy-mm-dd — obrigatório para "reprogramar". */
+  /** yyyy-mm-dd — obrigatório para "reprogramar" e para "renovar" com modoRenovacao === "data". */
   novaData?: string;
   /** Quitar: cobrar juros de atraso conforme a regra de cada empréstimo (padrão: true). */
   cobrarJurosAtraso?: boolean;
   /** Enviar confirmação via WhatsApp (padrão: false nas ações em massa, exceto quando solicitado). */
   enviarWhatsapp?: boolean;
+  /** Renovar: prazo a aplicar ("frequencia" = respeita cada contrato, ou prazo/data explícitos). */
+  modoRenovacao?: "frequencia" | "semanal" | "quinzenal" | "mensal" | "data";
 }
 
 /**
@@ -45,6 +47,13 @@ export async function alterarEmprestimosEmMassa(
   }
   if (acao === "reprogramar" && !/^\d{4}-\d{2}-\d{2}$/.test(opcoes.novaData ?? "")) {
     throw new Error("Informe a nova data de vencimento.");
+  }
+  if (
+    acao === "renovar" &&
+    opcoes.modoRenovacao === "data" &&
+    !/^\d{4}-\d{2}-\d{2}$/.test(opcoes.novaData ?? "")
+  ) {
+    throw new Error("Informe a nova data de vencimento para a renovação.");
   }
 
   // Só empréstimos do próprio cliente (impede ids de outro cliente via requisição manipulada)
@@ -94,7 +103,20 @@ export async function alterarEmprestimosEmMassa(
           itens.push({ id, status: "ignorado", mensagem: "Renovação só vale para empréstimos à vista." });
           continue;
         }
-        await receberSoJurosEmprestimo(id, opcoes.enviarWhatsapp ?? false);
+        const modoRenov = opcoes.modoRenovacao ?? "frequencia";
+        const novaDataRenov = modoRenov === "data" ? opcoes.novaData ?? null : null;
+        const novaFreqRenov =
+          modoRenov === "semanal" || modoRenov === "quinzenal" || modoRenov === "mensal"
+            ? modoRenov
+            : null;
+        await receberSoJurosEmprestimo(
+          id,
+          opcoes.enviarWhatsapp ?? false,
+          false,
+          null,
+          novaDataRenov,
+          novaFreqRenov
+        );
       } else if (acao === "reprogramar") {
         await reprogramarEmprestimo(id, opcoes.novaData!, 0, 0, emp.frequencia, opcoes.enviarWhatsapp ?? false);
       } else if (acao === "quitar") {

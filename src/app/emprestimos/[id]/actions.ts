@@ -6,6 +6,13 @@ import { enviarPorEvento, montarContexto, type OpcoesContexto } from "@/lib/mens
 import { formatarBRL, formatarDataUTC } from "@/lib/mensagens/render";
 import { hojeEmBrasilia } from "@/lib/dateUtils";
 import { calcularJurosAtraso, lerRegraAtraso } from "@/lib/jurosAtraso";
+import {
+  calcularProximaDataRenovacao,
+  isFrequenciaValida,
+  normalizarFrequencia,
+  parseIsoDateUTC,
+  toIsoDateUTC,
+} from "@/lib/renovacao";
 
 /**
  * Dispara uma mensagem de evento (template editável). Nunca lança: falha de
@@ -554,12 +561,14 @@ export async function deleteLoan(id: string) {
   return { success: true, redirectUrl: "/emprestimos" };
 }
 
-// 7. Receber só os juros (Renovar +30d)
+// 7. Receber só os juros (Renovar — respeita frequência ou data customizada)
 export async function receberSoJurosEmprestimo(
   emprestimoId: string,
   enviarWhatsapp = true,
   cobrarJurosAtraso = false,
-  valorDiariaCustom?: number | null
+  valorDiariaCustom?: number | null,
+  novaDataVencimentoCustom?: string | null,
+  atualizarFrequencia?: string | null
 ) {
   const hoje = hojeEmBrasilia();
   let clienteTelefone = "";
@@ -567,6 +576,18 @@ export async function receberSoJurosEmprestimo(
   let valorJurosPago = 0;
   let diariaAtrasoCobrada = 0;
   let novoVencimentoRenovacao: Date | null = null;
+
+  const dataCustomParsed = novaDataVencimentoCustom
+    ? parseIsoDateUTC(novaDataVencimentoCustom)
+    : null;
+  if (novaDataVencimentoCustom && !dataCustomParsed) {
+    throw new Error("Data de vencimento inválida para renovação.");
+  }
+
+  const freqAtualizar =
+    atualizarFrequencia && isFrequenciaValida(atualizarFrequencia)
+      ? normalizarFrequencia(atualizarFrequencia)
+      : null;
 
   await prisma.$transaction(async (tx) => {
     // 1. Encontra o empréstimo com o cliente e as parcelas abertas
@@ -627,51 +648,44 @@ export async function receberSoJurosEmprestimo(
       },
     });
 
-    // 5. Cria uma NOVA parcela com o valor integral original (Principal + Juros)
-    let novoVencimento = new Date(parcelaAtual.data_vencimento);
-
-    // Verificar se deve preservar o dia base original
-    const cfgBase = await tx.configuracao.findUnique({
-      where: { chave: "preservar_dia_base_reprogramacao" },
-    });
-
-    if (cfgBase?.valor === "true") {
-      let diaBase: number | null = null;
-      if (emprestimo.observacoes) {
-        const match = emprestimo.observacoes.match(/\[DIA_BASE:\s*(\d+)\]/i);
-        if (match) diaBase = parseInt(match[1], 10);
-        else {
-          const matchCobrador = emprestimo.observacoes.match(/dia\s*0?(\d+)/i);
-          if (matchCobrador) diaBase = parseInt(matchCobrador[1], 10);
-        }
-      }
-      if (!diaBase) {
-        const primeiraParcela = await tx.parcela.findFirst({
-          where: { emprestimo_id: emprestimoId },
-          orderBy: { numero: "asc" },
-        });
-        if (primeiraParcela) {
-          diaBase = new Date(primeiraParcela.data_vencimento).getUTCDate();
-        }
-      }
-
-      if (diaBase && diaBase >= 1 && diaBase <= 31) {
-        const currentYear = parcelaAtual.data_vencimento.getUTCFullYear();
-        const currentMonth = parcelaAtual.data_vencimento.getUTCMonth();
-        let nextYear = currentYear;
-        let nextMonth = currentMonth + 1;
-        if (nextMonth > 11) {
-          nextMonth = 0;
-          nextYear += 1;
-        }
-        const diasNoMes = new Date(Date.UTC(nextYear, nextMonth + 1, 0)).getUTCDate();
-        const finalDay = Math.min(diaBase, diasNoMes);
-        novoVencimento = new Date(Date.UTC(nextYear, nextMonth, finalDay));
-      } else {
-        novoVencimento.setUTCMonth(novoVencimento.getUTCMonth() + 1);
-      }
+    // 5. Define o novo vencimento: data customizada (se informada) ou conforme a frequência do empréstimo
+    let novoVencimento: Date;
+    if (dataCustomParsed) {
+      novoVencimento = dataCustomParsed;
     } else {
-      novoVencimento.setUTCMonth(novoVencimento.getUTCMonth() + 1);
+      const freqEfetiva = freqAtualizar ?? normalizarFrequencia(emprestimo.frequencia);
+      if (freqEfetiva === "mensal") {
+        const cfgBase = await tx.configuracao.findUnique({
+          where: { chave: "preservar_dia_base_reprogramacao" },
+        });
+        const preservar = cfgBase?.valor === "true";
+        let diaBase: number | null = null;
+        if (preservar) {
+          if (emprestimo.observacoes) {
+            const match = emprestimo.observacoes.match(/\[DIA_BASE:\s*(\d+)\]/i);
+            if (match) diaBase = parseInt(match[1], 10);
+            else {
+              const matchCobrador = emprestimo.observacoes.match(/dia\s*0?(\d+)/i);
+              if (matchCobrador) diaBase = parseInt(matchCobrador[1], 10);
+            }
+          }
+          if (!diaBase) {
+            const primeiraParcela = await tx.parcela.findFirst({
+              where: { emprestimo_id: emprestimoId },
+              orderBy: { numero: "asc" },
+            });
+            if (primeiraParcela) {
+              diaBase = new Date(primeiraParcela.data_vencimento).getUTCDate();
+            }
+          }
+        }
+        novoVencimento = calcularProximaDataRenovacao(parcelaAtual.data_vencimento, "mensal", {
+          diaBase,
+          preservarDiaBase: preservar,
+        });
+      } else {
+        novoVencimento = calcularProximaDataRenovacao(parcelaAtual.data_vencimento, freqEfetiva);
+      }
     }
 
     // Identificar o número da nova parcela
@@ -695,11 +709,14 @@ export async function receberSoJurosEmprestimo(
       },
     });
 
-    // 6. O vencimento global do empréstimo também deve refletir
+    // 6. O vencimento global (e opcionalmente a frequência) do empréstimo também deve refletir
     await tx.emprestimo.update({
       where: { id: emprestimoId },
       data: {
         data_vencimento: novoVencimento,
+        ...(freqAtualizar && freqAtualizar !== emprestimo.frequencia
+          ? { frequencia: freqAtualizar }
+          : {}),
       },
     });
 
@@ -733,6 +750,7 @@ export async function receberSoJurosEmprestimo(
     success: true,
     ...wa,
     clienteNome,
+    novoVencimento: novoVencimentoRenovacao ? toIsoDateUTC(novoVencimentoRenovacao) : undefined,
   };
 }
 
