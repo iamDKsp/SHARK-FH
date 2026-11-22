@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { X, Download, ChevronLeft, ChevronRight, ZoomIn, FileText } from "lucide-react";
 
 interface DocumentosLightboxProps {
@@ -128,8 +129,10 @@ export default function DocumentosLightbox({ documentos }: DocumentosLightboxPro
         })}
       </div>
 
-      {/* LIGHTBOX */}
-      {aberto !== null && (
+      {/* LIGHTBOX — via Portal para não ficar preso ao backdrop-filter/transform de ancestrais (.premium-card) */}
+      {aberto !== null &&
+        typeof document !== "undefined" &&
+        createPortal(
         <div
           className={`fixed inset-0 z-[9999] flex items-center justify-center ${
             closing ? "motion-modal-backdrop-out" : "motion-modal-backdrop-in"
@@ -234,7 +237,8 @@ export default function DocumentosLightbox({ documentos }: DocumentosLightboxPro
               ))}
             </div>
           )}
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );

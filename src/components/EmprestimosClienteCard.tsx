@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -440,6 +441,16 @@ export default function EmprestimosClienteCard({
     });
   };
 
+  // Trava o scroll da página de fundo enquanto o modal estiver aberto
+  useEffect(() => {
+    if (!modal) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [modal]);
+
   const acaoAtual = acoes.find((a) => a.id === modal);
   const rotuloItem = (id: string) => {
     const e = emprestimos.find((x) => x.id === id);
@@ -447,6 +458,7 @@ export default function EmprestimosClienteCard({
   };
 
   return (
+    <>
     <div className="premium-card overflow-hidden bg-white border border-slate-200 shadow-sm rounded-2xl">
       {/* Cabeçalho */}
       <div className="p-5 border-b border-slate-100 flex items-center justify-between gap-2 flex-wrap">
@@ -609,11 +621,20 @@ export default function EmprestimosClienteCard({
           })
         )}
       </div>
+    </div>
 
-      {/* Modal de ações em massa e PDF */}
-      {modal && (
-        <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl border border-slate-200 overflow-hidden max-h-[90vh] flex flex-col">
+      {/* Modal de ações em massa e PDF — renderizado via Portal no document.body para não sofrer
+          interferência do backdrop-filter/transform:hover/overflow-hidden do .premium-card */}
+      {modal &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) fecharModal();
+            }}
+            className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4"
+          >
+            <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl border border-slate-200 overflow-hidden max-h-[90vh] flex flex-col">
             <div className="p-5 border-b border-slate-100 flex items-start justify-between">
               <div>
                 <h3 className="font-bold text-slate-900">
@@ -1062,9 +1083,10 @@ export default function EmprestimosClienteCard({
               )}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
-    </div>
+    </>
   );
 }
 
