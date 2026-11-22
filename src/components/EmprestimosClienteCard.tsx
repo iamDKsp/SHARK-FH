@@ -20,6 +20,13 @@ import {
   obterNomeArquivoEmprestimosPdf,
   type ParcelaPdfItem,
 } from "@/lib/cronogramaPdf";
+import { hojeEmBrasilia } from "@/lib/dateUtils";
+import { calcularJurosAtraso } from "@/lib/jurosAtraso";
+import RenovacaoAtrasoSelector, {
+  criarEstadoAtrasoRenovacaoInicial,
+  resolverAtrasoRenovacao,
+  type RenovacaoAtrasoState,
+} from "@/components/RenovacaoAtrasoSelector";
 
 export interface EmprestimoClienteItem {
   id: string;
@@ -84,6 +91,9 @@ export default function EmprestimosClienteCard({
   const [novaData, setNovaData] = useState("");
   const [modoRenovacao, setModoRenovacao] = useState<"frequencia" | "semanal" | "quinzenal" | "mensal" | "data">("frequencia");
   const [cobrarJuros, setCobrarJuros] = useState(true);
+  const [renovAtraso, setRenovAtraso] = useState<RenovacaoAtrasoState>(() =>
+    criarEstadoAtrasoRenovacaoInicial(0)
+  );
   const [erro, setErro] = useState<string | null>(null);
   const [resultado, setResultado] = useState<ResultadoEmMassa | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -165,6 +175,38 @@ export default function EmprestimosClienteCard({
   const jurosSelecionado = itensSelecionados.reduce((acc, e) => acc + e.valorJuros, 0);
   const totalSelecionado = itensSelecionados.reduce((acc, e) => acc + e.total, 0);
 
+  const atrasoRenovSelecionados = useMemo(() => {
+    const hoje = hojeEmBrasilia();
+    let maxDias = 0;
+    let totalJuros = 0;
+    let qtdAtrasados = 0;
+    for (const emp of itensSelecionados) {
+      if (emp.situacao === "quitado") continue;
+      const aberta = (emp.parcelas || []).find((p) => p.status === "aberto");
+      if (aberta) {
+        const calc = calcularJurosAtraso(
+          { tipo: emp.atrasoTipo, valor: emp.atrasoValor },
+          Number(aberta.valor),
+          aberta.data_vencimento,
+          hoje
+        );
+        if (calc.dias > 0) {
+          qtdAtrasados++;
+          if (calc.dias > maxDias) maxDias = calc.dias;
+          totalJuros += calc.juros;
+        }
+      } else if (emp.situacao === "atrasado") {
+        qtdAtrasados++;
+        if (maxDias === 0) maxDias = 1;
+      }
+    }
+    return {
+      maxDias,
+      totalJuros: Math.round(totalJuros * 100) / 100,
+      qtdAtrasados,
+    };
+  }, [itensSelecionados]);
+
   const abrirModalPdf = () => {
     setErro(null);
     setPdfFeedback(null);
@@ -183,6 +225,7 @@ export default function EmprestimosClienteCard({
     setPdfFeedback(null);
     setNovaData("");
     setCobrarJuros(true);
+    setRenovAtraso(criarEstadoAtrasoRenovacaoInicial(0));
     if (terminou) {
       sair();
       router.refresh();
@@ -322,6 +365,24 @@ export default function EmprestimosClienteCard({
       setErro("Escolha a nova data de vencimento.");
       return;
     }
+
+    let cobrarJurosOp = cobrarJuros;
+    let valorDiariaCustomOp: number | null | undefined = undefined;
+    if (acao === "renovar") {
+      const resolucao = resolverAtrasoRenovacao(atrasoRenovSelecionados.maxDias, renovAtraso);
+      if (resolucao.bloqueado) {
+        setErro(resolucao.motivoBloqueio || "Selecione se cobrou ou abonou a diária de atraso.");
+        return;
+      }
+      cobrarJurosOp = resolucao.cobrarAtraso;
+      valorDiariaCustomOp =
+        atrasoRenovSelecionados.qtdAtrasados > 1 &&
+        atrasoRenovSelecionados.totalJuros > 0 &&
+        resolucao.valorDiariaCustom === atrasoRenovSelecionados.totalJuros
+          ? null
+          : resolucao.valorDiariaCustom;
+    }
+
     const ids = Array.from(selecionados);
     const rotuloAcao: Record<AcaoEmMassa, string> = {
       renovar: "Renovar em massa",
@@ -341,9 +402,11 @@ export default function EmprestimosClienteCard({
           acao,
           opcoes: {
             novaData: novaData || undefined,
-            cobrarJurosAtraso: cobrarJuros,
+            cobrarJurosAtraso: cobrarJurosOp,
             enviarWhatsapp,
-            ...(acao === "renovar" ? { modoRenovacao } : {}),
+            ...(acao === "renovar"
+              ? { modoRenovacao, valorDiariaCustom: valorDiariaCustomOp ?? null }
+              : {}),
           },
         },
       });
@@ -360,9 +423,11 @@ export default function EmprestimosClienteCard({
       try {
         const res = await alterarEmprestimosEmMassa(clienteId, ids, acao, {
           novaData: novaData || undefined,
-          cobrarJurosAtraso: cobrarJuros,
+          cobrarJurosAtraso: cobrarJurosOp,
           enviarWhatsapp,
-          ...(acao === "renovar" ? { modoRenovacao } : {}),
+          ...(acao === "renovar"
+            ? { modoRenovacao, valorDiariaCustom: valorDiariaCustomOp ?? null }
+            : {}),
         });
         setResultado(res);
       } catch (err: unknown) {
@@ -795,7 +860,13 @@ export default function EmprestimosClienteCard({
                   {acoes.map((a) => (
                     <button
                       key={a.id}
-                      onClick={() => { setErro(null); setModal(a.id); }}
+                      onClick={() => {
+                        setErro(null);
+                        if (a.id === "renovar") {
+                          setRenovAtraso(criarEstadoAtrasoRenovacaoInicial(atrasoRenovSelecionados.totalJuros));
+                        }
+                        setModal(a.id);
+                      }}
                       className="w-full flex items-center gap-3 p-3 rounded-2xl border border-slate-200 hover:border-slate-300 hover:bg-slate-50 transition-colors text-left cursor-pointer"
                     >
                       <span className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${a.cor}`}>
@@ -875,74 +946,91 @@ export default function EmprestimosClienteCard({
                     <div className="text-sm text-rose-700 bg-rose-50 rounded-xl p-3">{erro}</div>
                   )}
 
-                  {acaoAtual.id === "renovar" ? (
-                    <div className="space-y-3 pt-1">
-                      <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2.5">
-                        <label className="block text-[10px] font-black uppercase tracking-wider text-slate-500">
-                          Prazo / Novo vencimento
-                        </label>
-                        <div className="grid grid-cols-2 gap-1.5">
-                          {[
-                            { id: "frequencia", label: "Padrão de cada contrato" },
-                            { id: "quinzenal", label: "+15 dias (Quinzenal)" },
-                            { id: "mensal", label: "+30 dias (Mensal)" },
-                            { id: "semanal", label: "+7 dias (Semanal)" },
-                            { id: "data", label: "Data específica" },
-                          ].map((opt) => (
-                            <button
-                              key={opt.id}
-                              type="button"
-                              onClick={() => setModoRenovacao(opt.id as typeof modoRenovacao)}
-                              className={`py-2 px-2.5 rounded-lg text-[11px] font-bold border transition-all cursor-pointer text-center ${
-                                opt.id === "frequencia" ? "col-span-2" : ""
-                              } ${
-                                modoRenovacao === opt.id
-                                  ? "bg-amber-500 text-white border-amber-600 shadow-sm"
-                                  : "bg-white text-slate-700 border-slate-200 hover:bg-amber-50/50"
-                              }`}
-                            >
-                              {opt.label}
-                            </button>
-                          ))}
-                        </div>
-                        {modoRenovacao === "data" && (
-                          <input
-                            type="date"
-                            value={novaData}
-                            onChange={(e) => setNovaData(e.target.value)}
-                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500"
-                          />
-                        )}
-                      </div>
+                  {acaoAtual.id === "renovar" ? (() => {
+                    const resolucaoAtraso = resolverAtrasoRenovacao(atrasoRenovSelecionados.maxDias, renovAtraso);
+                    return (
+                      <div className="space-y-3 pt-1">
+                        <RenovacaoAtrasoSelector
+                          diasAtraso={atrasoRenovSelecionados.maxDias}
+                          jurosCalculado={atrasoRenovSelecionados.totalJuros}
+                          value={renovAtraso}
+                          onChange={setRenovAtraso}
+                          disabled={isPending}
+                        />
 
-                      <p className="text-xs font-bold text-slate-700">
-                        Deseja enviar a confirmação da renovação no WhatsApp do cliente?
-                      </p>
-                      <button
-                        onClick={() => confirmar(acaoAtual.id, true)}
-                        disabled={isPending || (modoRenovacao === "data" && !novaData)}
-                        className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-bold disabled:opacity-60 flex items-center justify-center gap-2 cursor-pointer"
-                      >
-                        {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                        <span>{isPending ? "Aplicando..." : `Sim, Renovar ${selecionados.size} e Enviar no WhatsApp`}</span>
-                      </button>
-                      <button
-                        onClick={() => confirmar(acaoAtual.id, false)}
-                        disabled={isPending || (modoRenovacao === "data" && !novaData)}
-                        className="w-full py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 text-xs sm:text-sm font-bold disabled:opacity-60 flex items-center justify-center gap-2 cursor-pointer"
-                      >
-                        <RefreshCw className="w-4 h-4 text-amber-600" />
-                        <span>{`Não, Renovar ${selecionados.size} sem Enviar no WhatsApp`}</span>
-                      </button>
-                      <button
-                        onClick={() => { setErro(null); setModal("menu"); }}
-                        disabled={isPending}
-                        className="w-full py-2 rounded-xl text-slate-400 hover:text-slate-600 text-xs font-bold disabled:opacity-50 cursor-pointer"
-                      >
-                        Voltar
-                      </button>
-                    </div>
-                  ) : (
+                        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2.5">
+                          <label className="block text-[10px] font-black uppercase tracking-wider text-slate-500">
+                            Prazo / Novo vencimento
+                          </label>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            {[
+                              { id: "frequencia", label: "Padrão de cada contrato" },
+                              { id: "quinzenal", label: "+15 dias (Quinzenal)" },
+                              { id: "mensal", label: "+30 dias (Mensal)" },
+                              { id: "semanal", label: "+7 dias (Semanal)" },
+                              { id: "data", label: "Data específica" },
+                            ].map((opt) => (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                onClick={() => setModoRenovacao(opt.id as typeof modoRenovacao)}
+                                className={`py-2 px-2.5 rounded-lg text-[11px] font-bold border transition-all cursor-pointer text-center ${
+                                  opt.id === "frequencia" ? "col-span-2" : ""
+                                } ${
+                                  modoRenovacao === opt.id
+                                    ? "bg-amber-500 text-white border-amber-600 shadow-sm"
+                                    : "bg-white text-slate-700 border-slate-200 hover:bg-amber-50/50"
+                                }`}
+                              >
+                                {opt.label}
+                              </button>
+                            ))}
+                          </div>
+                          {modoRenovacao === "data" && (
+                            <input
+                              type="date"
+                              value={novaData}
+                              onChange={(e) => setNovaData(e.target.value)}
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                            />
+                          )}
+                        </div>
+
+                        {resolucaoAtraso.motivoBloqueio && (
+                          <p className="text-[11px] font-bold text-amber-700 text-center">
+                            {resolucaoAtraso.motivoBloqueio}
+                          </p>
+                        )}
+
+                        <p className="text-xs font-bold text-slate-700">
+                          Deseja enviar a confirmação da renovação no WhatsApp do cliente?
+                        </p>
+                        <button
+                          onClick={() => confirmar(acaoAtual.id, true)}
+                          disabled={isPending || resolucaoAtraso.bloqueado || (modoRenovacao === "data" && !novaData)}
+                          className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-bold disabled:opacity-45 disabled:cursor-not-allowed flex items-center justify-center gap-2 cursor-pointer"
+                        >
+                          {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                          <span>{isPending ? "Aplicando..." : `Sim, Renovar ${selecionados.size} e Enviar no WhatsApp`}</span>
+                        </button>
+                        <button
+                          onClick={() => confirmar(acaoAtual.id, false)}
+                          disabled={isPending || resolucaoAtraso.bloqueado || (modoRenovacao === "data" && !novaData)}
+                          className="w-full py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 text-xs sm:text-sm font-bold disabled:opacity-45 disabled:cursor-not-allowed flex items-center justify-center gap-2 cursor-pointer"
+                        >
+                          <RefreshCw className="w-4 h-4 text-amber-600" />
+                          <span>{`Não, Renovar ${selecionados.size} sem Enviar no WhatsApp`}</span>
+                        </button>
+                        <button
+                          onClick={() => { setErro(null); setModal("menu"); }}
+                          disabled={isPending}
+                          className="w-full py-2 rounded-xl text-slate-400 hover:text-slate-600 text-xs font-bold disabled:opacity-50 cursor-pointer"
+                        >
+                          Voltar
+                        </button>
+                      </div>
+                    );
+                  })() : (
                     <>
                       <p className="text-xs text-slate-400">
                         Nenhuma mensagem de WhatsApp é enviada nas ações em massa.

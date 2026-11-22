@@ -146,3 +146,91 @@ export function labelFrequencia(frequencia?: string | null): string {
       return "Mensal";
   }
 }
+
+export interface RenovacaoAtrasoState {
+  decisao: "cobrar" | "abonar" | null;
+  valorInput: string;
+}
+
+export interface ResolucaoAtrasoRenovacao {
+  temAtraso: boolean;
+  bloqueado: boolean;
+  motivoBloqueio: string | null;
+  cobrarAtraso: boolean;
+  valorDiariaCustom: number | null;
+  diariaAplicada: number;
+}
+
+export function criarEstadoAtrasoRenovacaoInicial(jurosCalculado: number): RenovacaoAtrasoState {
+  return {
+    decisao: null,
+    valorInput: jurosCalculado > 0 ? String(jurosCalculado) : "",
+  };
+}
+
+/**
+ * Resolve a decisão de diária de atraso na renovação.
+ * Sempre exige escolha ("cobrar" ou "abonar") quando `diasAtraso > 0`,
+ * mesmo que o empréstimo não tenha regra automática de multa configurada.
+ */
+export function resolverAtrasoRenovacao(
+  diasAtraso: number,
+  state: RenovacaoAtrasoState
+): ResolucaoAtrasoRenovacao {
+  const temAtraso = diasAtraso > 0;
+  if (!temAtraso) {
+    return {
+      temAtraso: false,
+      bloqueado: false,
+      motivoBloqueio: null,
+      cobrarAtraso: false,
+      valorDiariaCustom: null,
+      diariaAplicada: 0,
+    };
+  }
+
+  if (!state.decisao) {
+    return {
+      temAtraso: true,
+      bloqueado: true,
+      motivoBloqueio: "Selecione acima se cobrou ou abonou a diária de atraso para continuar.",
+      cobrarAtraso: false,
+      valorDiariaCustom: null,
+      diariaAplicada: 0,
+    };
+  }
+
+  if (state.decisao === "abonar") {
+    return {
+      temAtraso: true,
+      bloqueado: false,
+      motivoBloqueio: null,
+      cobrarAtraso: false,
+      valorDiariaCustom: null,
+      diariaAplicada: 0,
+    };
+  }
+
+  const raw = String(state.valorInput ?? "").trim().replace(",", ".");
+  const parsed = Number(raw);
+  if (raw === "" || !Number.isFinite(parsed) || parsed <= 0) {
+    return {
+      temAtraso: true,
+      bloqueado: true,
+      motivoBloqueio: "Informe o valor da diária cobrada (maior que R$ 0) ou selecione Abonou (R$ 0).",
+      cobrarAtraso: true,
+      valorDiariaCustom: null,
+      diariaAplicada: 0,
+    };
+  }
+
+  const valor = Math.round(parsed * 100) / 100;
+  return {
+    temAtraso: true,
+    bloqueado: false,
+    motivoBloqueio: null,
+    cobrarAtraso: true,
+    valorDiariaCustom: valor,
+    diariaAplicada: valor,
+  };
+}

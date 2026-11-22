@@ -626,9 +626,9 @@ export async function receberSoJurosEmprestimo(
       throw new Error("O empréstimo não possui taxa de juros configurada para calcular o recebimento.");
     }
 
-    // 3b. Calcula diária de atraso se o usuário optou por cobrar na renovação
+    // 3b. Calcula diária de atraso se o usuário optou por cobrar na renovação (apenas se vencido)
     const atraso = jurosDaParcela(emprestimo, parcelaAtual, hoje, cobrarJurosAtraso);
-    if (cobrarJurosAtraso) {
+    if (cobrarJurosAtraso && atraso.dias > 0) {
       if (typeof valorDiariaCustom === "number" && Number.isFinite(valorDiariaCustom) && valorDiariaCustom >= 0) {
         diariaAtrasoCobrada = Number(valorDiariaCustom.toFixed(2));
       } else {
@@ -879,12 +879,38 @@ export async function updateEmprestimo(emprestimoId: string, formData: FormData)
   return { success: true, redirectUrl: `/emprestimos/${emprestimoId}` };
 }
 
-export async function atualizarDataPagamentoParcela(parcelaId: string, novaData: Date) {
+export async function atualizarDataPagamentoParcela(
+  parcelaId: string,
+  novaData: Date,
+  valorDiaria?: number | null
+) {
+  const parcela = await prisma.parcela.findUnique({
+    where: { id: parcelaId },
+    select: { id: true, emprestimo_id: true, valor: true },
+  });
+  if (!parcela) {
+    throw new Error("Parcela não encontrada.");
+  }
+
+  const dataUpdate: { data_pagamento: Date; valor_pago?: number } = {
+    data_pagamento: novaData,
+  };
+
+  if (typeof valorDiaria === "number" && Number.isFinite(valorDiaria) && valorDiaria >= 0) {
+    dataUpdate.valor_pago = Number((Number(parcela.valor) + valorDiaria).toFixed(2));
+  }
+
   await prisma.parcela.update({
     where: { id: parcelaId },
-    data: { data_pagamento: novaData },
+    data: dataUpdate,
   });
-  revalidatePath(`/emprestimos/`);
+
+  revalidatePath(`/emprestimos/${parcela.emprestimo_id}`);
+  revalidatePath("/emprestimos");
+  revalidatePath("/faturamento");
+  revalidatePath("/clientes");
+  revalidatePath("/cobrancas");
+  revalidatePath("/");
   return { success: true };
 }
 

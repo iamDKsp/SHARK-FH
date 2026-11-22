@@ -29,10 +29,15 @@ import RenovacaoDataSelector, {
   extrairParamsRenovacao,
   type RenovacaoDataState,
 } from "@/components/RenovacaoDataSelector";
+import RenovacaoAtrasoSelector, {
+  criarEstadoAtrasoRenovacaoInicial,
+  resolverAtrasoRenovacao,
+  type RenovacaoAtrasoState,
+} from "@/components/RenovacaoAtrasoSelector";
 import { formatarDataBR, labelPrazoCurto } from "@/lib/renovacao";
 
 interface Cliente { id: string; nome: string; telefone: string; blacklist: boolean; foto_url: string | null; }
-interface Parcela { id: string; numero: number; valor: number; data_vencimento: any; status: string; data_pagamento: any; }
+interface Parcela { id: string; numero: number; valor: number; valor_pago?: number | null; data_vencimento: any; status: string; data_pagamento: any; }
 interface Parceiro { id: string; nome: string; }
 interface Emprestimo {
   id: string; valor_emprestado: number; taxa_juros: number; taxa_multa: number;
@@ -125,8 +130,9 @@ export default function EmprestimoDetalhesView({
   }, []);
 
   const [renovEnviarWa, setRenovEnviarWa] = useState(true);
-  const [renovDecisaoAtraso, setRenovDecisaoAtraso] = useState<"cobrar" | "abonar" | null>(null);
-  const [renovDiariaInput, setRenovDiariaInput] = useState<string>("");
+  const [renovAtraso, setRenovAtraso] = useState<RenovacaoAtrasoState>(() =>
+    criarEstadoAtrasoRenovacaoInicial(0)
+  );
   const [renovData, setRenovData] = useState<RenovacaoDataState>(() =>
     criarEstadoRenovacaoInicial(emprestimo.data_vencimento, emprestimo.frequencia)
   );
@@ -208,8 +214,15 @@ export default function EmprestimoDetalhesView({
     setIsSavingData(false);
   };
 
-  // ── Editar Data do Pagamento da Parcela ──
-  const [editingParcela, setEditingParcela] = useState<{ id: string; numero: number; data: string } | null>(null);
+  // ── Editar Data e Diária do Pagamento da Parcela ──
+  const [editingParcela, setEditingParcela] = useState<{
+    id: string;
+    numero: number;
+    label: string;
+    valorBase: number;
+    data: string;
+    diaria: string;
+  } | null>(null);
   const [editingParcelaClosing, setEditingParcelaClosing] = useState(false);
 
   const closeEditingParcela = useCallback(() => {
@@ -220,10 +233,13 @@ export default function EmprestimoDetalhesView({
     }, 150);
   }, []);
 
-  const openEditingParcela = useCallback((p: { id: string; numero: number; data: string }) => {
-    setEditingParcelaClosing(false);
-    setEditingParcela(p);
-  }, []);
+  const openEditingParcela = useCallback(
+    (p: { id: string; numero: number; label: string; valorBase: number; data: string; diaria: string }) => {
+      setEditingParcelaClosing(false);
+      setEditingParcela(p);
+    },
+    []
+  );
 
   const [isSavingParcelaData, setIsSavingParcelaData] = useState(false);
 
@@ -675,20 +691,17 @@ export default function EmprestimoDetalhesView({
   const receiveJuros = () => {
     setRenovFeedback(null);
     setRenovEnviarWa(true);
-    setRenovDecisaoAtraso(null);
-    setRenovDiariaInput(atrasoRenovacao.juros > 0 ? String(atrasoRenovacao.juros) : "");
+    setRenovAtraso(criarEstadoAtrasoRenovacaoInicial(atrasoRenovacao.juros));
     const vencBase = abertas[0]?.data_vencimento ?? emprestimo.data_vencimento;
     setRenovData(criarEstadoRenovacaoInicial(vencBase, emprestimo.frequencia));
     openModal("renovar_juros");
   };
 
   const executarRenovacao = (enviarWhatsapp: boolean) => {
-    const temAtraso = atrasoRenovacao.dias > 0 && atrasoRenovacao.juros > 0;
-    if (temAtraso && !renovDecisaoAtraso) return;
+    const resolucaoAtraso = resolverAtrasoRenovacao(atrasoRenovacao.dias, renovAtraso);
+    if (resolucaoAtraso.bloqueado) return;
     if (!renovData.novaData) return;
-    const cobrarAtraso = temAtraso && renovDecisaoAtraso === "cobrar";
-    const diariaParsed = Number(String(renovDiariaInput || "0").replace(",", "."));
-    const valorDiariaCustom = cobrarAtraso && Number.isFinite(diariaParsed) && diariaParsed >= 0 ? diariaParsed : null;
+    const { cobrarAtraso, valorDiariaCustom } = resolucaoAtraso;
     const { novaDataVencimento, atualizarFrequencia } = extrairParamsRenovacao(renovData, emprestimo.frequencia);
 
     setRenovFeedback(null);
@@ -1280,17 +1293,32 @@ export default function EmprestimoDetalhesView({
                           </div>
                           <div className="text-xs text-slate-400 flex flex-wrap items-center gap-x-2 gap-y-0.5">
                             <span>Vence {fmtDate(p.data_vencimento)}</span>
-                            {p.data_pagamento && (
-                              <button
-                                type="button"
-                                onClick={() => openEditingParcela({ id: p.id, numero: p.numero, data: toInputDate(p.data_pagamento) })}
-                                className="text-emerald-600 hover:text-emerald-700 font-bold inline-flex items-center gap-1 hover:underline cursor-pointer group"
-                                title="Clique para editar a data de pagamento"
-                              >
-                                <span>· Pago {fmtDate(p.data_pagamento)}</span>
-                                <Pencil className="w-3 h-3 text-emerald-500 opacity-60 group-hover:opacity-100 transition-opacity" />
-                              </button>
-                            )}
+                            {p.data_pagamento && (() => {
+                              const diariaPaga =
+                                p.valor_pago != null
+                                  ? Math.max(0, Number((Number(p.valor_pago) - Number(p.valor)).toFixed(2)))
+                                  : 0;
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    openEditingParcela({
+                                      id: p.id,
+                                      numero: p.numero,
+                                      label: p.label,
+                                      valorBase: Number(p.valor),
+                                      data: toInputDate(p.data_pagamento),
+                                      diaria: diariaPaga > 0 ? String(diariaPaga) : "",
+                                    })
+                                  }
+                                  className="text-emerald-600 hover:text-emerald-700 font-bold inline-flex items-center gap-1 hover:underline cursor-pointer group"
+                                  title="Clique para editar data ou diária de atraso"
+                                >
+                                  <span>· Pago {fmtDate(p.data_pagamento)}</span>
+                                  <Pencil className="w-3 h-3 text-emerald-500 opacity-60 group-hover:opacity-100 transition-opacity" />
+                                </button>
+                              );
+                            })()}
                           </div>
                         </div>
                       </div>
@@ -1298,6 +1326,11 @@ export default function EmprestimoDetalhesView({
                       <div className="flex items-center justify-between sm:justify-end gap-2.5 pt-2 sm:pt-0 border-t border-slate-100 sm:border-0">
                         <div className="text-left sm:text-right">
                           <span className="text-sm font-black text-slate-900">{fmt(p.valor)}</span>
+                          {pPago && p.valor_pago != null && Number(p.valor_pago) > Number(p.valor) + 0.005 && (
+                            <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-1.5 py-0.5 mt-0.5 inline-block font-black">
+                              + {fmt(Number((Number(p.valor_pago) - Number(p.valor)).toFixed(2)))} diária
+                            </span>
+                          )}
                           {isAv && p.status === "aberto" && (
                             <span className="text-[10px] text-slate-400 block font-medium">
                               {Math.abs(p.valor - (Number(emprestimo.valor_emprestado) + valorJurosCalculado)) <= 0.05
@@ -1779,78 +1812,20 @@ export default function EmprestimoDetalhesView({
             )
           ) : (
             (() => {
-              const temAtraso = atrasoRenovacao.dias > 0 && atrasoRenovacao.juros > 0;
-              const diariaNum = Number(String(renovDiariaInput || "0").replace(",", "."));
-              const diariaAplicada =
-                temAtraso && renovDecisaoAtraso === "cobrar" && Number.isFinite(diariaNum) && diariaNum >= 0
-                  ? diariaNum
-                  : 0;
+              const resolucaoAtraso = resolverAtrasoRenovacao(atrasoRenovacao.dias, renovAtraso);
+              const { diariaAplicada, bloqueado: bloqueadoSemDecisao, motivoBloqueio } = resolucaoAtraso;
               const totalReceberAgora = valorJurosCalculado + diariaAplicada;
-              const bloqueadoSemDecisao = temAtraso && !renovDecisaoAtraso;
 
               return (
                 <div className="space-y-4">
-                  {/* Pergunta explícita de diária de atraso quando vencido */}
-                  {temAtraso && (
-                    <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3.5 space-y-2.5">
-                      <div className="flex items-start gap-2">
-                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                        <div className="text-xs text-amber-900 leading-snug">
-                          <span className="font-black">
-                            {atrasoRenovacao.dias} {atrasoRenovacao.dias === 1 ? "dia" : "dias"} de atraso
-                          </span>{" "}
-                          (multa calculada: <strong className="font-black">{fmt(atrasoRenovacao.juros)}</strong>).
-                          <div className="text-[11px] text-amber-800 mt-0.5 font-medium">
-                            O cliente pagou a diária de atraso ou você abonou?
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setRenovDecisaoAtraso("cobrar");
-                            if (!renovDiariaInput) setRenovDiariaInput(String(atrasoRenovacao.juros));
-                          }}
-                          className={`py-2 px-2.5 rounded-xl text-[11px] font-black border transition-all cursor-pointer ${
-                            renovDecisaoAtraso === "cobrar"
-                              ? "bg-amber-600 text-white border-amber-700 shadow-sm"
-                              : "bg-white text-amber-800 border-amber-200 hover:bg-amber-100"
-                          }`}
-                        >
-                          Cobrou diária
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setRenovDecisaoAtraso("abonar")}
-                          className={`py-2 px-2.5 rounded-xl text-[11px] font-black border transition-all cursor-pointer ${
-                            renovDecisaoAtraso === "abonar"
-                              ? "bg-slate-800 text-white border-slate-900 shadow-sm"
-                              : "bg-white text-slate-700 border-slate-200 hover:bg-slate-100"
-                          }`}
-                        >
-                          Abonou (R$ 0)
-                        </button>
-                      </div>
-
-                      {renovDecisaoAtraso === "cobrar" && (
-                        <div className="pt-1">
-                          <label className="text-[10px] font-black uppercase tracking-wider text-amber-800 block mb-1">
-                            Valor cobrado de diária (R$)
-                          </label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            value={renovDiariaInput}
-                            onChange={(e) => setRenovDiariaInput(e.target.value)}
-                            className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500/40"
-                          />
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  {/* Pergunta explícita de diária de atraso sempre que vencido */}
+                  <RenovacaoAtrasoSelector
+                    diasAtraso={atrasoRenovacao.dias}
+                    jurosCalculado={atrasoRenovacao.juros}
+                    value={renovAtraso}
+                    onChange={setRenovAtraso}
+                    disabled={isPending}
+                  />
 
                   {/* Card financeiro de resumo */}
                   <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 space-y-3">
@@ -1883,9 +1858,9 @@ export default function EmprestimoDetalhesView({
                     disabled={isPending}
                   />
 
-                  {bloqueadoSemDecisao && (
+                  {motivoBloqueio && (
                     <p className="text-[11px] font-bold text-amber-700 text-center">
-                      Selecione acima se cobrou ou abonou a diária de atraso para continuar.
+                      {motivoBloqueio}
                     </p>
                   )}
 
@@ -2006,72 +1981,101 @@ export default function EmprestimoDetalhesView({
         </div>
       )}
 
-      {/* MODAL EDITAR DATA PAGAMENTO */}
-      {editingParcela && (
-        <Modal isClosing={editingParcelaClosing} onClose={closeEditingParcela} title="Editar Data do Pagamento" subtitle={`Parcela ${editingParcela.numero}`}>
-          <div className="space-y-4">
-            <div>
-              <label className="text-xs font-bold text-slate-600 block mb-1.5">Data em que o pagamento foi realizado</label>
-              <input
-                type="date"
-                className={inputCls}
-                value={editingParcela.data}
-                onChange={(e) => setEditingParcela({ ...editingParcela, data: e.target.value })}
-              />
-            </div>
-            <div className="flex gap-2 justify-end pt-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={closeEditingParcela}
-                className="px-3.5 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                disabled={isSavingParcelaData || !editingParcela.data}
-                onClick={async () => {
-                  setIsSavingParcelaData(true);
-                  const enqueue = async () => {
-                    await enqueueOfflineAction({
-                      type: "ATUALIZAR_DATA_PAGAMENTO_PARCELA",
-                      entityId: emprestimo.id,
-                      dependsOnEntityId: emprestimo.pendingSync ? emprestimo.id : undefined,
-                      label: `Alterar data parcela #${editingParcela.numero} — ${emprestimo.cliente.nome}`,
-                      payload: {
-                        emprestimoId: emprestimo.id,
-                        parcelaId: editingParcela.id,
-                        novaDataIso: new Date(editingParcela.data).toISOString(),
-                      },
-                    });
-                    closeEditingParcela();
-                  };
-                  try {
-                    if (isOfflineEmp) {
-                      await enqueue();
-                    } else {
-                      await atualizarDataPagamentoParcela(editingParcela.id, new Date(editingParcela.data));
+      {/* MODAL EDITAR DATA E DIÁRIA DO PAGAMENTO */}
+      {editingParcela && (() => {
+        const diariaParsed = Number(String(editingParcela.diaria || "0").replace(",", "."));
+        const diariaValida = editingParcela.diaria.trim() === "" || (Number.isFinite(diariaParsed) && diariaParsed >= 0);
+        const diariaEfetiva = editingParcela.diaria.trim() === "" ? 0 : (diariaValida ? Math.round(diariaParsed * 100) / 100 : 0);
+        return (
+          <Modal isClosing={editingParcelaClosing} onClose={closeEditingParcela} title="Editar Pagamento" subtitle={editingParcela.label}>
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs font-bold text-slate-600 block mb-1.5">Data em que o pagamento foi realizado</label>
+                <input
+                  type="date"
+                  className={inputCls}
+                  value={editingParcela.data}
+                  onChange={(e) => setEditingParcela({ ...editingParcela, data: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-600 block mb-1.5">Diária de atraso cobrada (R$)</label>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  step="0.01"
+                  min="0"
+                  placeholder="0,00 (sem diária)"
+                  className={inputCls}
+                  value={editingParcela.diaria}
+                  onChange={(e) => setEditingParcela({ ...editingParcela, diaria: e.target.value })}
+                />
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Valor base: <strong className="text-slate-600">{fmt(editingParcela.valorBase)}</strong>
+                  {diariaEfetiva > 0 && (
+                    <> · Total pago: <strong className="text-emerald-700">{fmt(editingParcela.valorBase + diariaEfetiva)}</strong></>
+                  )}
+                </p>
+              </div>
+              <div className="flex gap-2 justify-end pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={closeEditingParcela}
+                  className="px-3.5 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={isSavingParcelaData || !editingParcela.data || !diariaValida}
+                  onClick={async () => {
+                    setIsSavingParcelaData(true);
+                    const enqueue = async () => {
+                      await enqueueOfflineAction({
+                        type: "ATUALIZAR_DATA_PAGAMENTO_PARCELA",
+                        entityId: emprestimo.id,
+                        dependsOnEntityId: emprestimo.pendingSync ? emprestimo.id : undefined,
+                        label: `Alterar pagamento ${editingParcela.label} — ${emprestimo.cliente.nome}`,
+                        payload: {
+                          emprestimoId: emprestimo.id,
+                          parcelaId: editingParcela.id,
+                          novaDataIso: new Date(editingParcela.data).toISOString(),
+                          valorDiaria: diariaEfetiva,
+                        },
+                      });
                       closeEditingParcela();
+                    };
+                    try {
+                      if (isOfflineEmp) {
+                        await enqueue();
+                      } else {
+                        await atualizarDataPagamentoParcela(
+                          editingParcela.id,
+                          new Date(editingParcela.data),
+                          diariaEfetiva
+                        );
+                        closeEditingParcela();
+                      }
+                    } catch (err: any) {
+                      if (isNetworkError(err)) {
+                        await enqueue();
+                      } else {
+                        alert(err.message || "Erro ao atualizar pagamento");
+                      }
+                    } finally {
+                      setIsSavingParcelaData(false);
                     }
-                  } catch (err: any) {
-                    if (isNetworkError(err)) {
-                      await enqueue();
-                    } else {
-                      alert(err.message || "Erro ao atualizar data");
-                    }
-                  } finally {
-                    setIsSavingParcelaData(false);
-                  }
-                }}
-                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-              >
-                {isSavingParcelaData ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
-                Salvar Data
-              </button>
+                  }}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  {isSavingParcelaData ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                  Salvar Alterações
+                </button>
+              </div>
             </div>
-          </div>
-        </Modal>
-      )}
+          </Modal>
+        );
+      })()}
     </div>
   );
 }

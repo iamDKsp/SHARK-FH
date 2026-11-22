@@ -16,6 +16,11 @@ import RenovacaoDataSelector, {
   extrairParamsRenovacao,
   type RenovacaoDataState,
 } from "@/components/RenovacaoDataSelector";
+import RenovacaoAtrasoSelector, {
+  criarEstadoAtrasoRenovacaoInicial,
+  resolverAtrasoRenovacao,
+  type RenovacaoAtrasoState,
+} from "@/components/RenovacaoAtrasoSelector";
 import { formatarDataBR, labelPrazoRenovacao } from "@/lib/renovacao";
 
 interface Cliente {
@@ -229,8 +234,9 @@ export default function EmprestimosListWrapper({
   const [renewClosing, setRenewClosing]   = useState(false);
   const [isRenewing, setIsRenewing]       = useState(false);
   const [renewError, setRenewError]       = useState<string | null>(null);
-  const [renewDecisaoAtraso, setRenewDecisaoAtraso] = useState<"cobrar" | "abonar" | null>(null);
-  const [renewDiariaInput, setRenewDiariaInput] = useState<string>("");
+  const [renewAtraso, setRenewAtraso]     = useState<RenovacaoAtrasoState>(() =>
+    criarEstadoAtrasoRenovacaoInicial(0)
+  );
   const [renewData, setRenewData] = useState<RenovacaoDataState | null>(null);
   const [isPendingRenew, startRenewTransition] = useTransition();
 
@@ -251,9 +257,8 @@ export default function EmprestimosListWrapper({
     e.stopPropagation();
     setRenewError(null);
     setRenewClosing(false);
-    setRenewDecisaoAtraso(null);
     const atr = calcAtrasoRenew(emp);
-    setRenewDiariaInput(atr.juros > 0 ? String(atr.juros) : "");
+    setRenewAtraso(criarEstadoAtrasoRenovacaoInicial(atr.juros));
     const aberta = (emp.parcelas || []).find((p: any) => p.status === "aberto");
     setRenewData(criarEstadoRenovacaoInicial(aberta?.data_vencimento ?? emp.data_vencimento, emp.frequencia));
     setRenewModalEmp(emp);
@@ -265,8 +270,7 @@ export default function EmprestimosListWrapper({
       setRenewModalEmp(null);
       setRenewClosing(false);
       setRenewError(null);
-      setRenewDecisaoAtraso(null);
-      setRenewDiariaInput("");
+      setRenewAtraso(criarEstadoAtrasoRenovacaoInicial(0));
       setRenewData(null);
     }, 150);
   };
@@ -274,11 +278,9 @@ export default function EmprestimosListWrapper({
   const confirmRenew = (enviarWhatsapp: boolean) => {
     if (!renewModalEmp || !renewData?.novaData) return;
     const atr = calcAtrasoRenew(renewModalEmp);
-    const temAtraso = atr.dias > 0 && atr.juros > 0;
-    if (temAtraso && !renewDecisaoAtraso) return;
-    const cobrarAtraso = temAtraso && renewDecisaoAtraso === "cobrar";
-    const diariaParsed = Number(String(renewDiariaInput || "0").replace(",", "."));
-    const valorDiariaCustom = cobrarAtraso && Number.isFinite(diariaParsed) && diariaParsed >= 0 ? diariaParsed : null;
+    const resolucaoAtraso = resolverAtrasoRenovacao(atr.dias, renewAtraso);
+    if (resolucaoAtraso.bloqueado) return;
+    const { cobrarAtraso, valorDiariaCustom } = resolucaoAtraso;
     const { novaDataVencimento, atualizarFrequencia } = extrairParamsRenovacao(renewData, renewModalEmp.frequencia);
 
     setIsRenewing(true);
@@ -1595,14 +1597,9 @@ export default function EmprestimosListWrapper({
             {/* Body */}
             {(() => {
               const atr = calcAtrasoRenew(renewModalEmp);
-              const temAtraso = atr.dias > 0 && atr.juros > 0;
+              const resolucaoAtraso = resolverAtrasoRenovacao(atr.dias, renewAtraso);
+              const { diariaAplicada, bloqueado: bloqueadoSemDecisao, motivoBloqueio } = resolucaoAtraso;
               const jurosBase = Number(renewModalEmp.valor_emprestado) * (Number(renewModalEmp.taxa_juros) / 100);
-              const diariaNum = Number(String(renewDiariaInput || "0").replace(",", "."));
-              const diariaAplicada =
-                temAtraso && renewDecisaoAtraso === "cobrar" && Number.isFinite(diariaNum) && diariaNum >= 0
-                  ? diariaNum
-                  : 0;
-              const bloqueadoSemDecisao = temAtraso && !renewDecisaoAtraso;
 
               return (
                 <>
@@ -1612,64 +1609,13 @@ export default function EmprestimosListWrapper({
                       <span className="font-black text-slate-900">{renewModalEmp.cliente.nome}</span>?
                     </p>
 
-                    {temAtraso && (
-                      <div className="bg-amber-50 border border-amber-300 rounded-2xl p-3.5 space-y-2.5">
-                        <div className="flex items-start gap-2">
-                          <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                          <div className="text-xs text-amber-900 leading-snug">
-                            <span className="font-black">
-                              {atr.dias} {atr.dias === 1 ? "dia" : "dias"} de atraso
-                            </span>{" "}
-                            (multa: <strong className="font-black">{formatBRL(atr.juros)}</strong>).
-                            <div className="text-[11px] text-amber-800 mt-0.5 font-medium">
-                              O cliente pagou a diária de atraso ou você abonou?
-                            </div>
-                          </div>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setRenewDecisaoAtraso("cobrar");
-                              if (!renewDiariaInput) setRenewDiariaInput(String(atr.juros));
-                            }}
-                            className={`py-2 px-2.5 rounded-xl text-[11px] font-black border transition-all cursor-pointer ${
-                              renewDecisaoAtraso === "cobrar"
-                                ? "bg-amber-600 text-white border-amber-700 shadow-sm"
-                                : "bg-white text-amber-800 border-amber-200 hover:bg-amber-100"
-                            }`}
-                          >
-                            Cobrou diária
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setRenewDecisaoAtraso("abonar")}
-                            className={`py-2 px-2.5 rounded-xl text-[11px] font-black border transition-all cursor-pointer ${
-                              renewDecisaoAtraso === "abonar"
-                                ? "bg-slate-800 text-white border-slate-900 shadow-sm"
-                                : "bg-white text-slate-700 border-slate-200 hover:bg-slate-100"
-                            }`}
-                          >
-                            Abonou (R$ 0)
-                          </button>
-                        </div>
-                        {renewDecisaoAtraso === "cobrar" && (
-                          <div className="pt-1">
-                            <label className="text-[10px] font-black uppercase tracking-wider text-amber-800 block mb-1">
-                              Valor cobrado de diária (R$)
-                            </label>
-                            <input
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              value={renewDiariaInput}
-                              onChange={(e) => setRenewDiariaInput(e.target.value)}
-                              className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500/40"
-                            />
-                          </div>
-                        )}
-                      </div>
-                    )}
+                    <RenovacaoAtrasoSelector
+                      diasAtraso={atr.dias}
+                      jurosCalculado={atr.juros}
+                      value={renewAtraso}
+                      onChange={setRenewAtraso}
+                      disabled={isRenewing || isPendingRenew}
+                    />
 
                     <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-1.5 text-xs">
                       <div className="flex justify-between">
@@ -1701,9 +1647,9 @@ export default function EmprestimosListWrapper({
                       />
                     )}
 
-                    {bloqueadoSemDecisao && (
+                    {motivoBloqueio && (
                       <p className="text-[11px] font-bold text-amber-700 text-center">
-                        Escolha acima se cobrou ou abonou a diária de atraso para continuar.
+                        {motivoBloqueio}
                       </p>
                     )}
 

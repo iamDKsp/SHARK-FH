@@ -427,7 +427,8 @@ export async function POST(request: NextRequest) {
         case "ATUALIZAR_DATA_PAGAMENTO_PARCELA": {
           await atualizarDataPagamentoParcela(
             op.payload.parcelaId,
-            new Date(op.payload.novaDataIso)
+            new Date(op.payload.novaDataIso),
+            op.payload.valorDiaria ?? null
           );
           await recordOperationSynced(op);
           results.push({

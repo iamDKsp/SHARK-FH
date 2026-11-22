@@ -54,6 +54,7 @@ export default async function EmprestimoDetalhesPage({ params }: PageProps) {
     taxa_juros: Number(emprestimo.taxa_juros),
     taxa_multa: Number(emprestimo.taxa_multa),
     juros_atraso: Number(emprestimo.juros_atraso),
+    atraso_valor: Number(emprestimo.atraso_valor || 0),
     parcelas: emprestimo.parcelas.map((p) => ({
       ...p,
       valor: Number(p.valor),

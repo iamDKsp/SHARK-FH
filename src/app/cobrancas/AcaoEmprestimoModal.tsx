@@ -33,6 +33,11 @@ import RenovacaoDataSelector, {
   extrairParamsRenovacao,
   type RenovacaoDataState,
 } from "@/components/RenovacaoDataSelector";
+import RenovacaoAtrasoSelector, {
+  criarEstadoAtrasoRenovacaoInicial,
+  resolverAtrasoRenovacao,
+  type RenovacaoAtrasoState,
+} from "@/components/RenovacaoAtrasoSelector";
 import { formatarDataBR } from "@/lib/renovacao";
 import { formatBRL, formatData, isParcelaUnica, type Parcela, type TipoAcaoEmprestimo } from "./tipos";
 
@@ -73,6 +78,9 @@ export default function AcaoEmprestimoModal({
   // Renovar
   const [renovData, setRenovData] = useState<RenovacaoDataState>(() =>
     criarEstadoRenovacaoInicial(p.data_vencimento, emp.frequencia)
+  );
+  const [renovAtraso, setRenovAtraso] = useState<RenovacaoAtrasoState>(() =>
+    criarEstadoAtrasoRenovacaoInicial(atrasoParcela.juros)
   );
 
   // Reprogramar
@@ -143,18 +151,24 @@ export default function AcaoEmprestimoModal({
 
   const handleConfirmarRenovacao = (enviarWhatsapp = enviarWa) => {
     setErro(null);
+    const resolucaoAtraso = resolverAtrasoRenovacao(atrasoParcela.dias, renovAtraso);
+    if (resolucaoAtraso.bloqueado) {
+      if (resolucaoAtraso.motivoBloqueio) setErro(resolucaoAtraso.motivoBloqueio);
+      return;
+    }
     if (!renovData.novaData) {
       setErro("Informe a nova data de vencimento.");
       return;
     }
+    const { cobrarAtraso, valorDiariaCustom } = resolucaoAtraso;
     const { novaDataVencimento, atualizarFrequencia } = extrairParamsRenovacao(renovData, emp.frequencia);
     startTransition(async () => {
       try {
         const res = await receberSoJurosEmprestimo(
           emp.id,
           enviarWhatsapp,
-          false,
-          null,
+          cobrarAtraso,
+          valorDiariaCustom,
           novaDataVencimento,
           atualizarFrequencia
         );
@@ -313,76 +327,114 @@ export default function AcaoEmprestimoModal({
           )}
 
           {/* ── 1. RENOVAR ── */}
-          {acao === "renovar" && (
-            <div className="space-y-4">
-              <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 space-y-3">
-                <div className="flex items-center justify-between text-xs pb-2 border-b border-slate-200/60">
-                  <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">
-                    Juros a Receber Hoje ({emp.taxa_juros}%)
-                  </span>
-                  <span className="text-base font-black text-emerald-600 tabular-nums">
-                    {formatBRL(valorJurosRenovacao)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">
-                    Principal Mantido
-                  </span>
-                  <span className="text-xs font-bold text-slate-700 tabular-nums">
-                    {formatBRL(emp.valor_emprestado)}
-                  </span>
-                </div>
-              </div>
+          {acao === "renovar" && (() => {
+            const resolucaoAtraso = resolverAtrasoRenovacao(atrasoParcela.dias, renovAtraso);
+            const { diariaAplicada, bloqueado: bloqueadoSemDecisao, motivoBloqueio } = resolucaoAtraso;
+            const totalReceberHoje = valorJurosRenovacao + diariaAplicada;
 
-              <RenovacaoDataSelector
-                vencimentoAtual={p.data_vencimento}
-                frequenciaAtual={emp.frequencia}
-                value={renovData}
-                onChange={setRenovData}
-                disabled={isPending}
-              />
-
-              <p className="text-xs text-slate-500 leading-relaxed">
-                Confirma o recebimento apenas dos juros (
-                <strong className="text-slate-700">{formatBRL(valorJurosRenovacao)}</strong>) e define o novo
-                vencimento para{" "}
-                <strong className="text-slate-700">{formatarDataBR(renovData.novaData) || "—"}</strong>.
-              </p>
-
-              <p className="text-xs text-slate-700 font-bold">
-                Deseja enviar a confirmação da renovação no WhatsApp de {cliente.nome}?
-              </p>
-
-              <div className="flex flex-col gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => handleConfirmarRenovacao(true)}
-                  disabled={isPending || !renovData.novaData}
-                  className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black rounded-xl transition-all flex items-center justify-center gap-2 shadow-sm cursor-pointer disabled:opacity-60"
-                >
-                  {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageSquare className="w-4 h-4" />}
-                  <span>{isPending ? "Renovando..." : "Sim, Renovar e Enviar no WhatsApp"}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleConfirmarRenovacao(false)}
-                  disabled={isPending || !renovData.novaData}
-                  className="w-full py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 text-xs font-black rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
-                >
-                  <RefreshCw className="w-4 h-4 text-slate-600" />
-                  <span>Não, Renovar sem Enviar no WhatsApp</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={fechar}
+            return (
+              <div className="space-y-4">
+                <RenovacaoAtrasoSelector
+                  diasAtraso={atrasoParcela.dias}
+                  jurosCalculado={atrasoParcela.juros}
+                  value={renovAtraso}
+                  onChange={setRenovAtraso}
                   disabled={isPending}
-                  className="w-full py-2 text-slate-400 hover:text-slate-600 text-xs font-bold transition-colors cursor-pointer"
-                >
-                  Cancelar
-                </button>
+                />
+
+                <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 space-y-3">
+                  <div className="flex items-center justify-between text-xs pb-2 border-b border-slate-200/60">
+                    <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+                      Juros da Renovação ({emp.taxa_juros}%)
+                    </span>
+                    <span className="text-sm font-black text-emerald-600 tabular-nums">
+                      {formatBRL(valorJurosRenovacao)}
+                    </span>
+                  </div>
+                  {diariaAplicada > 0 && (
+                    <div className="flex items-center justify-between text-xs pb-2 border-b border-slate-200/60">
+                      <span className="text-amber-600 font-bold uppercase tracking-wider text-[10px]">
+                        Diária de Atraso
+                      </span>
+                      <span className="text-sm font-black text-amber-600 tabular-nums">
+                        + {formatBRL(diariaAplicada)}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between text-xs pb-2 border-b border-slate-200/60">
+                    <span className="text-slate-600 font-black uppercase tracking-wider text-[10px]">
+                      Total a Receber Hoje
+                    </span>
+                    <span className="text-base font-black text-emerald-700 tabular-nums">
+                      {formatBRL(totalReceberHoje)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+                      Principal Mantido
+                    </span>
+                    <span className="text-xs font-bold text-slate-700 tabular-nums">
+                      {formatBRL(emp.valor_emprestado)}
+                    </span>
+                  </div>
+                </div>
+
+                <RenovacaoDataSelector
+                  vencimentoAtual={p.data_vencimento}
+                  frequenciaAtual={emp.frequencia}
+                  value={renovData}
+                  onChange={setRenovData}
+                  disabled={isPending}
+                />
+
+                {motivoBloqueio && (
+                  <p className="text-[11px] font-bold text-amber-700 text-center">
+                    {motivoBloqueio}
+                  </p>
+                )}
+
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  Confirma o recebimento de{" "}
+                  <strong className="text-slate-700">{formatBRL(totalReceberHoje)}</strong>
+                  {diariaAplicada > 0 ? " (juros + diária)" : " (juros)"} e define o novo vencimento para{" "}
+                  <strong className="text-slate-700">{formatarDataBR(renovData.novaData) || "—"}</strong>.
+                </p>
+
+                <p className="text-xs text-slate-700 font-bold">
+                  Deseja enviar a confirmação da renovação no WhatsApp de {cliente.nome}?
+                </p>
+
+                <div className="flex flex-col gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => handleConfirmarRenovacao(true)}
+                    disabled={isPending || bloqueadoSemDecisao || !renovData.novaData}
+                    className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black rounded-xl transition-all flex items-center justify-center gap-2 shadow-sm cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
+                  >
+                    {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageSquare className="w-4 h-4" />}
+                    <span>{isPending ? "Renovando..." : "Sim, Renovar e Enviar no WhatsApp"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleConfirmarRenovacao(false)}
+                    disabled={isPending || bloqueadoSemDecisao || !renovData.novaData}
+                    className="w-full py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 text-xs font-black rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
+                  >
+                    <RefreshCw className="w-4 h-4 text-slate-600" />
+                    <span>Não, Renovar sem Enviar no WhatsApp</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={fechar}
+                    disabled={isPending}
+                    className="w-full py-2 text-slate-400 hover:text-slate-600 text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* ── 2. QUITAR EMPRÉSTIMO ou PAGAR PARCELA ── */}
           {(acao === "quitar" || acao === "pagar_parcela") && (() => {

@@ -285,7 +285,7 @@ export type OfflineOperation =
     })
   | (OfflineOperationBase & {
       type: "ATUALIZAR_DATA_PAGAMENTO_PARCELA";
-      payload: { emprestimoId: string; parcelaId: string; novaDataIso: string };
+      payload: { emprestimoId: string; parcelaId: string; novaDataIso: string; valorDiaria?: number | null };
     })
   | (OfflineOperationBase & {
       type: "ALTERAR_EMPRESTIMOS_MASSA";
@@ -296,6 +296,7 @@ export type OfflineOperation =
         opcoes: {
           novaData?: string;
           cobrarJurosAtraso?: boolean;
+          valorDiariaCustom?: number | null;
           enviarWhatsapp?: boolean;
           modoRenovacao?: "frequencia" | "semanal" | "quinzenal" | "mensal" | "data";
         };

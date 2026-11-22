@@ -2,6 +2,7 @@
 // Rodar: npx tsx scripts/test-juros-atraso.ts
 import assert from "node:assert/strict";
 import { calcularJurosAtraso, descreverRegraAtraso, diasDeAtraso, lerRegraAtraso } from "../src/lib/jurosAtraso";
+import { criarEstadoAtrasoRenovacaoInicial, resolverAtrasoRenovacao } from "../src/lib/renovacao";
 
 let ok = 0;
 const t = (nome: string, fn: () => void) => { fn(); ok++; console.log("OK", nome); };
@@ -47,6 +48,45 @@ t("lerRegraAtraso sanea o formulário", () => {
   assert.deepEqual(lerRegraAtraso(f({ atrasoTipo: "fixo_dia", atrasoValor: "0" })), { tipo: "nenhum", valor: 0, taxaMulta: 0 });
   assert.deepEqual(lerRegraAtraso(f({ atrasoTipo: "xyz", atrasoValor: "10" })), { tipo: "nenhum", valor: 0, taxaMulta: 0 });
   assert.deepEqual(lerRegraAtraso(f({})), { tipo: "nenhum", valor: 0, taxaMulta: 0 });
+});
+
+t("resolverAtrasoRenovacao: sem atraso (0 dias) não bloqueia e não cobra", () => {
+  const init = criarEstadoAtrasoRenovacaoInicial(0);
+  const res = resolverAtrasoRenovacao(0, init);
+  assert.equal(res.temAtraso, false);
+  assert.equal(res.bloqueado, false);
+  assert.equal(res.cobrarAtraso, false);
+  assert.equal(res.diariaAplicada, 0);
+});
+
+t("resolverAtrasoRenovacao: vencido SEM regra automática ainda exige decisão e aceita diária manual", () => {
+  const init = criarEstadoAtrasoRenovacaoInicial(0); // juros calculado = 0 (contrato sem regra)
+  const semEscolha = resolverAtrasoRenovacao(6, init);
+  assert.equal(semEscolha.temAtraso, true);
+  assert.equal(semEscolha.bloqueado, true);
+
+  const cobrouSemValor = resolverAtrasoRenovacao(6, { decisao: "cobrar", valorInput: "" });
+  assert.equal(cobrouSemValor.bloqueado, true);
+
+  const cobrouManual = resolverAtrasoRenovacao(6, { decisao: "cobrar", valorInput: "120,50" });
+  assert.equal(cobrouManual.bloqueado, false);
+  assert.equal(cobrouManual.cobrarAtraso, true);
+  assert.equal(cobrouManual.valorDiariaCustom, 120.5);
+  assert.equal(cobrouManual.diariaAplicada, 120.5);
+
+  const abonou = resolverAtrasoRenovacao(6, { decisao: "abonar", valorInput: "" });
+  assert.equal(abonou.bloqueado, false);
+  assert.equal(abonou.cobrarAtraso, false);
+  assert.equal(abonou.valorDiariaCustom, null);
+  assert.equal(abonou.diariaAplicada, 0);
+});
+
+t("resolverAtrasoRenovacao: vencido COM regra automática pré-preenche e permite editar", () => {
+  const init = criarEstadoAtrasoRenovacaoInicial(200);
+  assert.equal(init.valorInput, "200");
+  const cobrouAuto = resolverAtrasoRenovacao(4, { ...init, decisao: "cobrar" });
+  assert.equal(cobrouAuto.bloqueado, false);
+  assert.equal(cobrouAuto.valorDiariaCustom, 200);
 });
 
 console.log(`\n${ok} testes OK`);

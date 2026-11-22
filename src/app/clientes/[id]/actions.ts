@@ -23,8 +23,10 @@ export interface ResultadoEmMassa {
 interface OpcoesEmMassa {
   /** yyyy-mm-dd — obrigatório para "reprogramar" e para "renovar" com modoRenovacao === "data". */
   novaData?: string;
-  /** Quitar: cobrar juros de atraso conforme a regra de cada empréstimo (padrão: true). */
+  /** Quitar/Renovar: cobrar juros/diária de atraso (padrão: true para quitar, false para renovar se omitido). */
   cobrarJurosAtraso?: boolean;
+  /** Renovar: valor customizado de diária de atraso (R$) por empréstimo. */
+  valorDiariaCustom?: number | null;
   /** Enviar confirmação via WhatsApp (padrão: false nas ações em massa, exceto quando solicitado). */
   enviarWhatsapp?: boolean;
   /** Renovar: prazo a aplicar ("frequencia" = respeita cada contrato, ou prazo/data explícitos). */
@@ -112,8 +114,8 @@ export async function alterarEmprestimosEmMassa(
         await receberSoJurosEmprestimo(
           id,
           opcoes.enviarWhatsapp ?? false,
-          false,
-          null,
+          opcoes.cobrarJurosAtraso ?? false,
+          opcoes.valorDiariaCustom ?? null,
           novaDataRenov,
           novaFreqRenov
         );

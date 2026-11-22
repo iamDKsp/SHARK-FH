@@ -174,14 +174,22 @@ export function applyPendingToEmprestimos(
         if (cur) {
           const aberta = cur.parcelas.find((p) => p.status === "aberto");
           if (aberta) {
-            const juros = cur.valor_emprestado * (cur.taxa_juros / 100);
+            const juros = Number((cur.valor_emprestado * (cur.taxa_juros / 100)).toFixed(2));
+            const diaria =
+              op.payload.cobrarJurosAtraso &&
+              typeof op.payload.valorDiariaCustom === "number" &&
+              Number.isFinite(op.payload.valorDiariaCustom) &&
+              op.payload.valorDiariaCustom > 0
+                ? Number(op.payload.valorDiariaCustom.toFixed(2))
+                : 0;
             const dtCustom = op.payload.novaDataVencimento
               ? parseIsoDateUTC(op.payload.novaDataVencimento)
               : null;
             const freqEfetiva = op.payload.atualizarFrequencia || cur.frequencia;
             const dt = dtCustom ?? calcularProximaDataRenovacao(aberta.data_vencimento, freqEfetiva);
             aberta.status = "pago_renovacao";
-            aberta.valor_pago = juros;
+            aberta.valor = juros;
+            aberta.valor_pago = Number((juros + diaria).toFixed(2));
             aberta.data_pagamento = new Date(op.createdAt).toISOString();
             const maxNum = cur.parcelas.reduce((m, p) => Math.max(m, p.numero), 0);
             cur.parcelas.push({
@@ -216,6 +224,21 @@ export function applyPendingToEmprestimos(
         const cur = map.get(op.payload.emprestimoId);
         if (cur) {
           cur.data_prevista_pagamento = op.payload.data;
+          cur.pendingSync = true;
+          cur.pendingActionLabel = op.label;
+        }
+        break;
+      }
+      case "ATUALIZAR_DATA_PAGAMENTO_PARCELA": {
+        const cur = map.get(op.payload.emprestimoId);
+        if (cur) {
+          const p = cur.parcelas.find((x) => x.id === op.payload.parcelaId);
+          if (p) {
+            p.data_pagamento = op.payload.novaDataIso;
+            if (typeof op.payload.valorDiaria === "number" && Number.isFinite(op.payload.valorDiaria) && op.payload.valorDiaria >= 0) {
+              p.valor_pago = Number((Number(p.valor) + op.payload.valorDiaria).toFixed(2));
+            }
+          }
           cur.pendingSync = true;
           cur.pendingActionLabel = op.label;
         }
