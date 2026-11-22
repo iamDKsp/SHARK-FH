@@ -7,7 +7,10 @@ import { useState, useEffect, useMemo, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import SearchableSelect from "@/components/SearchableSelect";
 import AtrasoField from "@/components/AtrasoField";
-import ModalClienteRapido, { type ClienteRapidoCriado } from "@/components/ModalClienteRapido";
+import ModalClienteRapido, {
+  type ClienteExistenteVinculado,
+  type ClienteRapidoCriado,
+} from "@/components/ModalClienteRapido";
 import { generateUuid, useOffline } from "@/components/offline/OfflineProvider";
 import type { TipoAtraso } from "@/lib/jurosAtraso";
 
@@ -65,6 +68,7 @@ export default function FormNovoEmprestimo({ clientes, parceiros, clienteIdParam
   const [showQuickClientModal, setShowQuickClientModal] = useState(false);
   const [quickClientInitialSearch, setQuickClientInitialSearch] = useState("");
   const [recentQuickClientId, setRecentQuickClientId] = useState<string | null>(null);
+  const [autoLinkedClient, setAutoLinkedClient] = useState<ClienteExistenteVinculado | null>(null);
   const [parceiroId, setParceiroId] = useState("");
 
   // Mescla clientes do cache/servidor com recém-criados para seleção imediata sem flicker
@@ -101,6 +105,28 @@ export default function FormNovoEmprestimo({ clientes, parceiros, clienteIdParam
     });
     setClienteId(novo.id);
     setRecentQuickClientId(novo.id);
+    setAutoLinkedClient(null);
+  };
+
+  const handleExistingClientLinked = (existente: ClienteExistenteVinculado) => {
+    setClientesLocais((prev) => {
+      if (clientes.some((c) => c.id === existente.id) || prev.some((c) => c.id === existente.id)) {
+        return prev;
+      }
+      return [
+        ...prev,
+        {
+          id: existente.id,
+          nome: existente.nome,
+          rawNome: existente.nome,
+          telefone: existente.telefone,
+          pendingSync: false,
+        },
+      ];
+    });
+    setClienteId(existente.id);
+    setRecentQuickClientId(null);
+    setAutoLinkedClient(existente);
   };
   const [valor, setValor] = useState<number>(0);
   const [tipoPagamento, setTipoPagamento] = useState<TipoPagamento>("a_vista_juros");
@@ -387,6 +413,7 @@ export default function FormNovoEmprestimo({ clientes, parceiros, clienteIdParam
                     onChange={(id) => {
                       setClienteId(id);
                       if (id !== recentQuickClientId) setRecentQuickClientId(null);
+                      if (id !== autoLinkedClient?.id) setAutoLinkedClient(null);
                     }}
                     options={todosClientes}
                     placeholder="Selecione uma pessoa..."
@@ -398,6 +425,14 @@ export default function FormNovoEmprestimo({ clientes, parceiros, clienteIdParam
                   <p className="text-xs text-emerald-700 font-semibold flex items-center gap-1.5 pt-0.5 animate-in fade-in slide-in-from-top-1 duration-200">
                     <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-600 animate-pop" />
                     <span>Cliente criado e vinculado! Você pode completar o cadastro na aba Clientes depois.</span>
+                  </p>
+                )}
+                {autoLinkedClient && clienteId === autoLinkedClient.id && (
+                  <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2 font-semibold flex items-start gap-1.5 mt-1 animate-in fade-in slide-in-from-top-1 duration-200">
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-amber-600 mt-0.5" />
+                    <span>
+                      Já existia um cliente com este telefone — <strong>{autoLinkedClient.nome}</strong> foi vinculado automaticamente (sem criar duplicado).
+                    </span>
                   </p>
                 )}
               </div>
@@ -871,10 +906,7 @@ export default function FormNovoEmprestimo({ clientes, parceiros, clienteIdParam
         clientesExistentes={todosClientes}
         onClose={() => setShowQuickClientModal(false)}
         onCreated={handleQuickClientCreated}
-        onSelectExisting={(existingId) => {
-          setClienteId(existingId);
-          setRecentQuickClientId(null);
-        }}
+        onSelectExisting={handleExistingClientLinked}
       />
 
       {/* Modal de Confirmação: Avisar ou não no WhatsApp ao criar empréstimo */}

@@ -7,6 +7,7 @@ import type {
   CachedParceiro,
   OfflineOperation,
   OfflineOperationType,
+  SyncOperationResult,
 } from "./types";
 
 const DB_PREFIX = "shark_fh_offline_v1_";
@@ -564,19 +565,118 @@ export async function updateOperationStatus(
   await txPromise(tx);
 }
 
-export async function markOperationSynced(userId: string, op: OfflineOperation): Promise<void> {
+export async function markOperationSynced(
+  userId: string,
+  op: OfflineOperation,
+  result?: SyncOperationResult
+): Promise<void> {
   const db = await openOfflineDb(userId);
   const tx = db.transaction(
     [STORES.outbox, STORES.clientes, STORES.parceiros, STORES.emprestimos, STORES.cheques],
     "readwrite"
   );
 
-  tx.objectStore(STORES.outbox).delete(op.operationId);
+  const outboxStore = tx.objectStore(STORES.outbox);
+  outboxStore.delete(op.operationId);
 
   if (op.type === "CREATE_CLIENTE") {
     const store = tx.objectStore(STORES.clientes);
-    const existing = await reqPromise(store.get(op.entityId));
-    if (existing) store.put({ ...existing, pendingSync: false, foto_url: null });
+    const resolvedId = result?.entityId;
+    if (result?.matchedByPhone && resolvedId && resolvedId !== op.entityId) {
+      // Remove o registro otimista duplicado do cache local e garante referência ao existente
+      store.delete(op.entityId);
+      const existingReal = await reqPromise(store.get(resolvedId));
+      if (!existingReal && result.linkedCliente) {
+        const novoCache: CachedCliente = {
+          id: result.linkedCliente.id,
+          nome: result.linkedCliente.nome,
+          telefone: result.linkedCliente.telefone,
+          cidade: op.payload.cidade || "Bauru",
+          documento: "",
+          endereco: null,
+          referencia: null,
+          quem_indicou: null,
+          email: null,
+          blacklist: false,
+          observacoes: null,
+          foto_url: null,
+          criado_em: new Date(op.createdAt).toISOString(),
+          pendingSync: false,
+        };
+        store.put(novoCache);
+      }
+
+      // Remapeia eventuais operações pendentes na outbox que apontavam para o entityId temporário
+      const remainingOps: OfflineOperation[] = await reqPromise(outboxStore.getAll());
+      for (const rem of remainingOps) {
+        let changed = false;
+        const patched: OfflineOperation = { ...rem } as OfflineOperation;
+        if (patched.dependsOnEntityId === op.entityId) {
+          patched.dependsOnEntityId = undefined;
+          changed = true;
+        }
+        if (patched.type === "CREATE_EMPRESTIMO" && patched.payload.clienteId === op.entityId) {
+          patched.payload = {
+            ...patched.payload,
+            clienteId: resolvedId,
+            clienteNome: result.linkedCliente?.nome || patched.payload.clienteNome,
+            clienteTelefone: result.linkedCliente?.telefone || patched.payload.clienteTelefone,
+          };
+          changed = true;
+        } else if (patched.type === "UPDATE_EMPRESTIMO" && patched.payload.clienteId === op.entityId) {
+          patched.payload = { ...patched.payload, clienteId: resolvedId };
+          changed = true;
+        } else if (patched.type === "CREATE_CHEQUE" && patched.payload.cliente_id === op.entityId) {
+          patched.payload = {
+            ...patched.payload,
+            cliente_id: resolvedId,
+            clienteNome: result.linkedCliente?.nome || patched.payload.clienteNome,
+            clienteTelefone: result.linkedCliente?.telefone || patched.payload.clienteTelefone,
+          };
+          changed = true;
+        } else if (patched.type === "UPDATE_CLIENTE" && (patched.payload.id === op.entityId || patched.entityId === op.entityId)) {
+          patched.entityId = resolvedId;
+          patched.payload = { ...patched.payload, id: resolvedId };
+          changed = true;
+        }
+        if (changed) outboxStore.put(patched);
+      }
+
+      // Remapeia empréstimos/cheques otimistas em cache local
+      const empStore = tx.objectStore(STORES.emprestimos);
+      const allEmps: CachedEmprestimo[] = await reqPromise(empStore.getAll());
+      for (const emp of allEmps) {
+        if (emp.cliente_id === op.entityId) {
+          empStore.put({
+            ...emp,
+            cliente_id: resolvedId,
+            cliente: {
+              ...emp.cliente,
+              id: resolvedId,
+              nome: result.linkedCliente?.nome || emp.cliente.nome,
+              telefone: result.linkedCliente?.telefone || emp.cliente.telefone,
+            },
+          });
+        }
+      }
+
+      const chStore = tx.objectStore(STORES.cheques);
+      const allCheques: CachedCheque[] = await reqPromise(chStore.getAll());
+      for (const ch of allCheques) {
+        if (ch.cliente_id === op.entityId) {
+          chStore.put({
+            ...ch,
+            cliente_id: resolvedId,
+            cliente: result.linkedCliente
+              ? { nome: result.linkedCliente.nome, telefone: result.linkedCliente.telefone }
+              : ch.cliente,
+          });
+        }
+      }
+    } else {
+      const existing = await reqPromise(store.get(op.entityId));
+      if (existing) store.put({ ...existing, pendingSync: false, foto_url: null });
+    }
   } else if (op.type === "CREATE_PARCEIRO") {
     const store = tx.objectStore(STORES.parceiros);
     const existing = await reqPromise(store.get(op.entityId));

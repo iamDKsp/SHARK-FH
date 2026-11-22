@@ -1,6 +1,5 @@
 "use client";
 
-import { createCliente } from "./actions";
 import Link from "next/link";
 import { 
   ArrowLeft, 
@@ -9,16 +8,121 @@ import {
   Image as ImageIcon, 
   Paperclip, 
   Camera, 
-  Loader2 
+  Loader2,
+  Phone,
+  Link2,
+  Plus
 } from "lucide-react";
-import { useState, useRef, useTransition } from "react";
+import { useState, useRef, useTransition, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { generateUuid, useOffline } from "@/components/offline/OfflineProvider";
+import { getAllClientes } from "@/lib/offline/db";
+import { applyPendingToClientes } from "@/lib/offline/applyPending";
+import type { CachedCliente } from "@/lib/offline/types";
+import {
+  chaveComparacaoTelefone,
+  normalizarTelefone,
+  telefonesIguais,
+} from "@/lib/telefone";
+
+interface ClienteExistenteInfo {
+  id: string;
+  nome: string;
+  telefone: string;
+  pendingSync?: boolean;
+}
 
 export default function NovoClientePage() {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
-  const { enqueueOfflineAction } = useOffline();
+  const { isOnline, session, pendingOps, dataRevision, enqueueOfflineAction, showToast } = useOffline();
+
+  const [telefone, setTelefone] = useState("");
+  const [clientesCache, setClientesCache] = useState<CachedCliente[]>([]);
+  const [clienteDuplicadoServidor, setClienteDuplicadoServidor] =
+    useState<ClienteExistenteInfo | null>(null);
+
+  useEffect(() => {
+    const uid = session?.userId || "local";
+    let cancelled = false;
+    getAllClientes(uid)
+      .then((list) => {
+        if (!cancelled) setClientesCache(list);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.userId, dataRevision]);
+
+  const clientesEfetivos = useMemo(
+    () => applyPendingToClientes(clientesCache, pendingOps),
+    [clientesCache, pendingOps]
+  );
+
+  const clienteDuplicadoLocal = useMemo<ClienteExistenteInfo | null>(() => {
+    if (!chaveComparacaoTelefone(telefone)) return null;
+    const found = clientesEfetivos.find((c) => telefonesIguais(c.telefone, telefone));
+    if (!found) return null;
+    return {
+      id: found.id,
+      nome: found.nome,
+      telefone: found.telefone,
+      pendingSync: Boolean(found.pendingSync),
+    };
+  }, [telefone, clientesEfetivos]);
+
+  // Verificação online complementar caso o cache local esteja desatualizado
+  useEffect(() => {
+    const chave = chaveComparacaoTelefone(telefone);
+    if (!isOnline || clienteDuplicadoLocal || chave.length < 8) {
+      setClienteDuplicadoServidor(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(
+          `/api/clientes?telefone=${encodeURIComponent(normalizarTelefone(telefone))}`,
+          { cache: "no-store", signal: controller.signal }
+        );
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          cliente?: { id: string; nome: string; telefone: string } | null;
+        };
+        if (data?.cliente?.id) {
+          setClienteDuplicadoServidor({
+            id: data.cliente.id,
+            nome: data.cliente.nome,
+            telefone: data.cliente.telefone,
+          });
+        } else {
+          setClienteDuplicadoServidor(null);
+        }
+      } catch {
+        // Ignora abort/erro de rede — a trava final ocorre também no servidor
+      }
+    }, 300);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [telefone, isOnline, clienteDuplicadoLocal]);
+
+  const clienteDuplicado = clienteDuplicadoLocal || clienteDuplicadoServidor;
+
+  const abrirClienteExistente = (existente: ClienteExistenteInfo) => {
+    showToast(
+      `Já existe um cliente com este número: "${existente.nome}". Vinculado ao cadastro existente!`
+    );
+    if (!isOnline || existente.pendingSync) {
+      router.push(`/offline/cliente?id=${encodeURIComponent(existente.id)}`);
+    } else {
+      router.push(`/clientes/${existente.id}`);
+    }
+  };
 
   // Foto de Perfil
   const [fotoPreview, setFotoPreview] = useState<string | null>(null);
@@ -210,10 +314,17 @@ export default function NovoClientePage() {
   // --- Submit ---
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+
+    // Impede criação duplicada se o telefone já pertencer a um cliente existente
+    if (clienteDuplicado) {
+      abrirClienteExistente(clienteDuplicado);
+      return;
+    }
+
     const formData = new FormData(e.currentTarget);
 
     const nome = String(formData.get("nome") || "").trim();
-    const telefone = String(formData.get("telefone") || "");
+    const telefoneNorm = normalizarTelefone(telefone || String(formData.get("telefone") || ""));
     const cidade = String(formData.get("cidade") || "Bauru");
     const documento = String(formData.get("documento") || "");
     const endereco = String(formData.get("endereco") || "") || null;
@@ -225,17 +336,22 @@ export default function NovoClientePage() {
     const documentosBase64 =
       novosDocumentos.length > 0 ? JSON.stringify(novosDocumentos.map((d) => d.base64)) : null;
 
+    if (!telefoneNorm) {
+      alert("Informe um telefone (WhatsApp) válido com números.");
+      return;
+    }
+
     startTransition(async () => {
       try {
         const entityId = generateUuid();
-        await enqueueOfflineAction(
+        const res = await enqueueOfflineAction(
           {
             type: "CREATE_CLIENTE",
             entityId,
             label: `Novo cliente: ${nome}`,
             payload: {
               nome,
-              telefone,
+              telefone: telefoneNorm,
               cidade,
               documento,
               endereco,
@@ -250,6 +366,13 @@ export default function NovoClientePage() {
           },
           { tryImmediateSync: true }
         );
+
+        // Se o servidor detectar duplicidade por telefone, vincula ao cadastro existente automaticamente
+        if (res.result?.matchedByPhone && res.result.linkedCliente) {
+          abrirClienteExistente(res.result.linkedCliente);
+          return;
+        }
+
         router.push("/clientes");
       } catch (err) {
         console.error("Erro ao salvar cliente:", err);
@@ -291,7 +414,7 @@ export default function NovoClientePage() {
                 type="text"
                 id="nome"
                 name="nome"
-                required
+                required={!clienteDuplicado}
                 placeholder="Nome completo"
                 className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-900"
               />
@@ -303,14 +426,57 @@ export default function NovoClientePage() {
                 Telefone (WhatsApp) *
               </label>
               <input
-                type="text"
+                type="tel"
+                inputMode="tel"
                 id="telefone"
                 name="telefone"
                 required
+                value={telefone}
+                onChange={(e) => setTelefone(e.target.value)}
                 placeholder="(00) 00000-0000"
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-900"
+                className={`w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 text-slate-900 ${
+                  clienteDuplicado
+                    ? "border-amber-400 focus:ring-amber-500 bg-amber-50/40"
+                    : "border-slate-200 focus:ring-emerald-500"
+                }`}
               />
             </div>
+
+            {/* Aviso de cliente já cadastrado pelo telefone */}
+            {clienteDuplicado && (
+              <div className="col-span-1 md:col-span-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-xl bg-amber-50 border-2 border-amber-300 text-amber-950 text-xs">
+                <div className="flex items-start gap-2.5">
+                  <Phone className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-black text-sm text-amber-950">
+                      Já existe um cliente cadastrado com este telefone
+                    </p>
+                    <p className="text-amber-900 mt-0.5 leading-relaxed">
+                      Este número já pertence a <strong>{clienteDuplicado.nome}</strong>. Não é
+                      permitido criar um cadastro duplicado — você será vinculado ao cadastro
+                      existente automaticamente.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => abrirClienteExistente(clienteDuplicado)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs transition-colors cursor-pointer"
+                  >
+                    <Link2 className="w-3.5 h-3.5" />
+                    <span>Abrir cadastro</span>
+                  </button>
+                  <Link
+                    href={`/emprestimos/novo?clienteId=${encodeURIComponent(clienteDuplicado.id)}`}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Novo empréstimo</span>
+                  </Link>
+                </div>
+              </div>
+            )}
 
             {/* Cidade */}
             <div className="space-y-1.5">
@@ -591,14 +757,26 @@ export default function NovoClientePage() {
           <button
             type="submit"
             disabled={isPending}
-            className="flex items-center justify-center space-x-1.5 bg-emerald-600 text-white px-6 py-2.5 rounded-xl text-xs font-semibold hover:bg-emerald-700 transition-colors disabled:opacity-50 shadow-sm cursor-pointer"
+            className={`flex items-center justify-center space-x-1.5 text-white px-6 py-2.5 rounded-xl text-xs font-semibold transition-colors disabled:opacity-50 shadow-sm cursor-pointer ${
+              clienteDuplicado
+                ? "bg-amber-600 hover:bg-amber-700"
+                : "bg-emerald-600 hover:bg-emerald-700"
+            }`}
           >
             {isPending ? (
               <Loader2 className="w-4 h-4 animate-spin" />
+            ) : clienteDuplicado ? (
+              <Link2 className="w-4 h-4" />
             ) : (
               <Save className="w-4 h-4" />
             )}
-            <span>{isPending ? "Salvando..." : "Salvar cliente"}</span>
+            <span>
+              {isPending
+                ? "Salvando..."
+                : clienteDuplicado
+                ? "Vincular ao cliente existente"
+                : "Salvar cliente"}
+            </span>
           </button>
         </div>
       </form>

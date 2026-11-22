@@ -118,6 +118,10 @@ export async function POST(request: NextRequest) {
 
   const results: SyncOperationResult[] = [];
   const failedEntityIds = new Set<string>();
+  // Quando CREATE_CLIENTE encontra um cliente já cadastrado pelo mesmo telefone,
+  // remapeia o entityId temporário -> ID real para operações dependentes no mesmo lote.
+  const remappedClienteIds = new Map<string, string>();
+  const resolveClienteId = (id: string) => remappedClienteIds.get(id) ?? id;
 
   for (const op of operations) {
     if (!op || !op.operationId || !op.type) {
@@ -154,24 +158,38 @@ export async function POST(request: NextRequest) {
     try {
       switch (op.type) {
         case "CREATE_CLIENTE": {
-          const { cliente, alreadyExisted } = await criarClienteNoBanco({
+          const { cliente, alreadyExisted, matchedByPhone } = await criarClienteNoBanco({
             id: op.entityId,
             ...op.payload,
           });
+          if (op.entityId && cliente.id !== op.entityId) {
+            remappedClienteIds.set(op.entityId, cliente.id);
+          }
           await recordOperationSynced(op);
           revalidatePath("/clientes");
           results.push({
             operationId: op.operationId,
             status: alreadyExisted ? "already_synced" : "synced",
             entityId: cliente.id,
+            ...(matchedByPhone
+              ? {
+                  matchedByPhone: true,
+                  linkedCliente: {
+                    id: cliente.id,
+                    nome: cliente.nome,
+                    telefone: cliente.telefone,
+                  },
+                }
+              : {}),
           });
           break;
         }
 
         case "UPDATE_CLIENTE": {
+          const targetId = resolveClienteId(op.payload.id || op.entityId);
           const cliente = await atualizarClienteNoBanco({
             ...op.payload,
-            id: op.payload.id || op.entityId,
+            id: targetId,
           });
           await recordOperationSynced(op);
           revalidatePath("/clientes");
@@ -185,7 +203,7 @@ export async function POST(request: NextRequest) {
         }
 
         case "DELETE_CLIENTE": {
-          const id = op.payload.clienteId || op.entityId;
+          const id = resolveClienteId(op.payload.clienteId || op.entityId);
           const existe = await prisma.cliente.findUnique({ where: { id }, select: { id: true } });
           if (existe) {
             await prisma.cliente.delete({ where: { id } });
@@ -202,8 +220,9 @@ export async function POST(request: NextRequest) {
         }
 
         case "TOGGLE_CLIENT_BLACKLIST": {
+          const clientId = resolveClienteId(op.payload.clientId);
           await toggleClientBlacklist(
-            op.payload.clientId,
+            clientId,
             op.payload.currentStatus,
             op.payload.emprestimoId || ""
           );
@@ -211,15 +230,16 @@ export async function POST(request: NextRequest) {
           results.push({
             operationId: op.operationId,
             status: "synced",
-            entityId: op.payload.clientId,
+            entityId: clientId,
           });
           break;
         }
 
         case "CREATE_EMPRESTIMO": {
+          const clienteIdResolvido = resolveClienteId(op.payload.clienteId);
           const res = await criarEmprestimoNoBanco({
             id: op.entityId,
-            clienteId: op.payload.clienteId,
+            clienteId: clienteIdResolvido,
             parceiroId: op.payload.parceiroId,
             valorEmprestado: op.payload.valorEmprestado,
             tipoPagamento: op.payload.tipoPagamento,
@@ -264,7 +284,10 @@ export async function POST(request: NextRequest) {
         }
 
         case "UPDATE_EMPRESTIMO": {
-          const fd = buildFormDataFromUpdateEmprestimo(op.payload);
+          const fd = buildFormDataFromUpdateEmprestimo({
+            ...op.payload,
+            clienteId: resolveClienteId(op.payload.clienteId),
+          });
           await updateEmprestimo(op.payload.emprestimoId, fd);
           await recordOperationSynced(op);
           results.push({
@@ -440,8 +463,9 @@ export async function POST(request: NextRequest) {
         }
 
         case "ALTERAR_EMPRESTIMOS_MASSA": {
+          const clienteIdResolvido = resolveClienteId(op.payload.clienteId);
           await alterarEmprestimosEmMassa(
-            op.payload.clienteId,
+            clienteIdResolvido,
             op.payload.ids,
             op.payload.acao,
             op.payload.opcoes
@@ -450,7 +474,7 @@ export async function POST(request: NextRequest) {
           results.push({
             operationId: op.operationId,
             status: "synced",
-            entityId: op.payload.clienteId,
+            entityId: clienteIdResolvido,
           });
           break;
         }
@@ -468,7 +492,7 @@ export async function POST(request: NextRequest) {
           const created = await prisma.cheque.create({
             data: {
               ...(validId ? { id: validId } : {}),
-              cliente_id: op.payload.cliente_id,
+              cliente_id: resolveClienteId(op.payload.cliente_id),
               parceiro_id: op.payload.parceiro_id || null,
               valor: op.payload.valor,
               taxa_desconto: op.payload.taxa_desconto,

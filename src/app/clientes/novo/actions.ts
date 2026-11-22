@@ -17,7 +17,7 @@ export async function createCliente(formData: FormData) {
   const fotoUrl = formData.get("fotoBase64") as string | null;
   const documentosUrlsStr = formData.get("documentosBase64") as string | null;
 
-  await criarClienteNoBanco({
+  const { cliente, matchedByPhone } = await criarClienteNoBanco({
     nome,
     telefone,
     cidade,
@@ -33,5 +33,14 @@ export async function createCliente(formData: FormData) {
   });
 
   revalidatePath("/clientes");
-  return { success: true, redirectUrl: "/clientes" };
+  return {
+    success: true,
+    matchedByPhone,
+    cliente: {
+      id: cliente.id,
+      nome: cliente.nome,
+      telefone: cliente.telefone,
+    },
+    redirectUrl: matchedByPhone ? `/clientes/${cliente.id}` : "/clientes",
+  };
 }

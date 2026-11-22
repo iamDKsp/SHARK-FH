@@ -1,8 +1,13 @@
 "use client";
 
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { X, UserPlus, Loader2, Info, AlertCircle, CheckCircle2, Phone } from "lucide-react";
+import { X, UserPlus, Loader2, Info, AlertCircle, CheckCircle2, Phone, Link2 } from "lucide-react";
 import { generateUuid, useOffline } from "@/components/offline/OfflineProvider";
+import {
+  chaveComparacaoTelefone,
+  normalizarTelefone,
+  telefonesIguais,
+} from "@/lib/telefone";
 
 export interface ClienteRapidoCriado {
   id: string;
@@ -10,6 +15,12 @@ export interface ClienteRapidoCriado {
   rawNome: string;
   telefone: string;
   pendingSync: boolean;
+}
+
+export interface ClienteExistenteVinculado {
+  id: string;
+  nome: string;
+  telefone: string;
 }
 
 interface ClienteExistenteRef {
@@ -25,16 +36,8 @@ interface ModalClienteRapidoProps {
   clientesExistentes: ClienteExistenteRef[];
   onClose: () => void;
   onCreated: (cliente: ClienteRapidoCriado) => void;
-  onSelectExisting?: (clienteId: string) => void;
+  onSelectExisting?: (cliente: ClienteExistenteVinculado) => void;
 }
-
-const normalizePhoneDigits = (raw: string) => {
-  const digits = (raw || "").replace(/\D/g, "");
-  if (digits.length > 11 && digits.startsWith("55")) {
-    return digits.slice(2);
-  }
-  return digits;
-};
 
 function parseInitialSearch(initialSearch: string): { nome: string; telefone: string } {
   const trimmed = initialSearch.trim();
@@ -105,16 +108,76 @@ function ModalClienteRapidoDialog({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isSaving, handleClose]);
 
-  const clienteDuplicado = useMemo(() => {
-    const digits = normalizePhoneDigits(telefone);
-    if (digits.length < 8) return null;
-    return (
-      clientesExistentes.find((c) => {
-        const existingDigits = normalizePhoneDigits(c.telefone);
-        return existingDigits.length >= 8 && existingDigits === digits;
-      }) || null
-    );
+  const [clienteDuplicadoServidor, setClienteDuplicadoServidor] =
+    useState<ClienteExistenteVinculado | null>(null);
+
+  const clienteDuplicadoLocal = useMemo<ClienteExistenteVinculado | null>(() => {
+    if (!chaveComparacaoTelefone(telefone)) return null;
+    const found = clientesExistentes.find((c) => telefonesIguais(c.telefone, telefone));
+    if (!found) return null;
+    return {
+      id: found.id,
+      nome: found.rawNome || found.nome,
+      telefone: found.telefone,
+    };
   }, [telefone, clientesExistentes]);
+
+  // Verificação complementar online (caso o cache local ainda não tenha um cliente recém-criado em outro dispositivo)
+  useEffect(() => {
+    const chave = chaveComparacaoTelefone(telefone);
+    if (!isOnline || clienteDuplicadoLocal || chave.length < 8) {
+      setClienteDuplicadoServidor(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(
+          `/api/clientes?telefone=${encodeURIComponent(normalizarTelefone(telefone))}`,
+          { cache: "no-store", signal: controller.signal }
+        );
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          cliente?: { id: string; nome: string; telefone: string } | null;
+        };
+        if (data?.cliente?.id) {
+          setClienteDuplicadoServidor({
+            id: data.cliente.id,
+            nome: data.cliente.nome,
+            telefone: data.cliente.telefone,
+          });
+        } else {
+          setClienteDuplicadoServidor(null);
+        }
+      } catch {
+        // Ignora abort/rede — validação final ainda acontece no servidor ao sincronizar
+      }
+    }, 300);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [telefone, isOnline, clienteDuplicadoLocal]);
+
+  const clienteDuplicado = clienteDuplicadoLocal || clienteDuplicadoServidor;
+
+  const vincularExistente = useCallback(
+    (existente: ClienteExistenteVinculado) => {
+      showToast(
+        `Já existe um cliente com este número: "${existente.nome}". Vinculado automaticamente!`
+      );
+      onSelectExisting?.(existente);
+      setClosing(true);
+      setTimeout(() => {
+        setClosing(false);
+        setIsSaving(false);
+        onClose();
+      }, 140);
+    },
+    [onClose, onSelectExisting, showToast]
+  );
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -122,20 +185,27 @@ function ModalClienteRapidoDialog({
 
     const nomeTrim = nome.trim();
     const telefoneRaw = telefone.trim();
-    const telefoneDigits = telefoneRaw.replace(/\D/g, "");
+    const telefoneDigits = normalizarTelefone(telefoneRaw);
     const cidadeTrim = cidade.trim() || "Bauru";
     const documentoTrim = documento.trim();
     const quemIndicouTrim = quemIndicou.trim();
 
-    if (!nomeTrim) {
-      setErro("Informe o nome completo do cliente.");
-      nomeInputRef.current?.focus();
-      return;
-    }
-
     if (!telefoneDigits) {
       setErro("Informe um telefone (WhatsApp) válido com números.");
       telefoneInputRef.current?.focus();
+      return;
+    }
+
+    // Impede criação duplicada e vincula o cliente existente automaticamente
+    if (clienteDuplicado) {
+      setErro(null);
+      vincularExistente(clienteDuplicado);
+      return;
+    }
+
+    if (!nomeTrim) {
+      setErro("Informe o nome completo do cliente.");
+      nomeInputRef.current?.focus();
       return;
     }
 
@@ -151,7 +221,7 @@ function ModalClienteRapidoDialog({
           label: `Novo cliente: ${nomeTrim}`,
           payload: {
             nome: nomeTrim,
-            telefone: telefoneRaw,
+            telefone: telefoneDigits,
             cidade: cidadeTrim,
             documento: documentoTrim,
             endereco: null,
@@ -167,12 +237,19 @@ function ModalClienteRapidoDialog({
         { tryImmediateSync: true }
       );
 
+      // Caso o servidor identifique duplicidade por telefone que não estava no cache local,
+      // vincula o cliente já existente automaticamente sem duplicar.
+      if (res.result?.matchedByPhone && res.result.linkedCliente) {
+        vincularExistente(res.result.linkedCliente);
+        return;
+      }
+
       if (res.syncedImmediately) {
         showToast(`Cliente "${nomeTrim}" cadastrado e selecionado!`);
       }
 
       onCreated({
-        id: entityId,
+        id: res.result?.entityId || entityId,
         nome: res.syncedImmediately ? nomeTrim : `${nomeTrim} (Pendente)`,
         rawNome: nomeTrim,
         telefone: telefoneDigits,
@@ -264,7 +341,7 @@ function ModalClienteRapidoDialog({
               ref={nomeInputRef}
               type="text"
               id="rapido-nome"
-              required
+              required={!clienteDuplicado}
               value={nome}
               onChange={(e) => {
                 setNome(e.target.value);
@@ -318,29 +395,28 @@ function ModalClienteRapidoDialog({
             </div>
           </div>
 
-          {/* Alerta suave caso o telefone já pertença a um cliente cadastrado */}
+          {/* Bloqueio de duplicidade caso o telefone já pertença a um cliente cadastrado */}
           {clienteDuplicado && (
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs animate-in fade-in slide-in-from-top-1 duration-200">
-              <div className="flex items-start gap-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3.5 rounded-xl bg-amber-50 border-2 border-amber-300 text-amber-950 text-xs animate-in fade-in slide-in-from-top-1 duration-200">
+              <div className="flex items-start gap-2.5">
                 <Phone className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                 <div>
-                  <p className="font-bold">Telefone já cadastrado</p>
-                  <p className="text-amber-800 mt-0.5">
-                    Já existe um cliente com este número:{" "}
-                    <strong>{clienteDuplicado.rawNome || clienteDuplicado.nome}</strong>.
+                  <p className="font-black">Já existe um cliente com este telefone</p>
+                  <p className="text-amber-900 mt-0.5 leading-relaxed">
+                    Este número já está cadastrado para{" "}
+                    <strong>{clienteDuplicado.nome}</strong>. Não é permitido criar cadastro
+                    duplicado — ao confirmar, ele será vinculado automaticamente.
                   </p>
                 </div>
               </div>
               {onSelectExisting && (
                 <button
                   type="button"
-                  onClick={() => {
-                    onSelectExisting(clienteDuplicado.id);
-                    handleClose();
-                  }}
-                  className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs transition-colors cursor-pointer btn-press"
+                  onClick={() => vincularExistente(clienteDuplicado)}
+                  className="shrink-0 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs transition-colors cursor-pointer btn-press"
                 >
-                  Usar existente
+                  <Link2 className="w-3.5 h-3.5" />
+                  <span>Vincular agora</span>
                 </button>
               )}
             </div>
@@ -414,14 +490,26 @@ function ModalClienteRapidoDialog({
             type="submit"
             form="form-cliente-rapido"
             disabled={isSaving}
-            className="w-full sm:w-auto flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2.5 rounded-xl text-xs sm:text-sm font-black shadow-md shadow-emerald-600/20 transition-all active:scale-[0.98] disabled:opacity-50 cursor-pointer"
+            className={`w-full sm:w-auto flex items-center justify-center gap-2 text-white px-6 py-2.5 rounded-xl text-xs sm:text-sm font-black shadow-md transition-all active:scale-[0.98] disabled:opacity-50 cursor-pointer ${
+              clienteDuplicado
+                ? "bg-amber-600 hover:bg-amber-700 shadow-amber-600/20"
+                : "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-600/20"
+            }`}
           >
             {isSaving ? (
               <Loader2 className="w-4 h-4 animate-spin" />
+            ) : clienteDuplicado ? (
+              <Link2 className="w-4 h-4" />
             ) : (
               <CheckCircle2 className="w-4 h-4" />
             )}
-            <span>{isSaving ? "Cadastrando..." : "Criar e vincular cliente"}</span>
+            <span>
+              {isSaving
+                ? "Cadastrando..."
+                : clienteDuplicado
+                ? "Vincular cliente existente"
+                : "Criar e vincular cliente"}
+            </span>
           </button>
         </div>
       </div>

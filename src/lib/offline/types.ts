@@ -328,6 +328,12 @@ export interface SyncOperationResult {
   status: "synced" | "already_synced" | "error";
   entityId?: string;
   error?: string;
+  matchedByPhone?: boolean;
+  linkedCliente?: {
+    id: string;
+    nome: string;
+    telefone: string;
+  };
   whatsappPdfMeta?: SyncWhatsappPdfMeta;
   whatsappEnviado?: boolean;
   whatsappErro?: string;

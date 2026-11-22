@@ -1,7 +1,32 @@
 import { prisma } from "@/lib/db";
+import {
+  chaveComparacaoTelefone,
+  normalizarTelefone,
+  telefonesIguais,
+} from "@/lib/telefone";
 
 const UUID_V4_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export async function buscarClientePorTelefone(telefone: string, excludeId?: string) {
+  const chave = chaveComparacaoTelefone(telefone);
+  if (!chave) return null;
+
+  const ultimos8 = chave.slice(-8);
+  const candidatos = await prisma.$queryRaw<{ id: string; telefone: string }[]>`
+    SELECT id, telefone
+    FROM clientes
+    WHERE RIGHT(regexp_replace(telefone, '[^0-9]', '', 'g'), 8) = ${ultimos8}
+    ORDER BY criado_em ASC
+  `;
+
+  const match = candidatos.find(
+    (c) => (!excludeId || c.id !== excludeId) && telefonesIguais(c.telefone, telefone)
+  );
+  if (!match) return null;
+
+  return prisma.cliente.findUnique({ where: { id: match.id } });
+}
 
 export interface CriarClienteInput {
   id?: string;
@@ -21,7 +46,7 @@ export interface CriarClienteInput {
 
 export async function criarClienteNoBanco(input: CriarClienteInput) {
   const nome = (input.nome || "").trim();
-  const telefone = (input.telefone || "").replace(/\D/g, "");
+  const telefone = normalizarTelefone(input.telefone);
 
   if (!nome) {
     throw new Error("Nome do cliente é obrigatório.");
@@ -35,8 +60,14 @@ export async function criarClienteNoBanco(input: CriarClienteInput) {
   if (validId) {
     const existing = await prisma.cliente.findUnique({ where: { id: validId } });
     if (existing) {
-      return { cliente: existing, alreadyExisted: true };
+      return { cliente: existing, alreadyExisted: true, matchedByPhone: false };
     }
+  }
+
+  // Bloqueia criação duplicada por telefone e vincula automaticamente ao cliente existente
+  const existingByPhone = await buscarClientePorTelefone(telefone);
+  if (existingByPhone) {
+    return { cliente: existingByPhone, alreadyExisted: true, matchedByPhone: true };
   }
 
   const cliente = await prisma.cliente.create({
@@ -57,7 +88,7 @@ export async function criarClienteNoBanco(input: CriarClienteInput) {
     },
   });
 
-  return { cliente, alreadyExisted: false };
+  return { cliente, alreadyExisted: false, matchedByPhone: false };
 }
 
 export interface AtualizarClienteInput extends CriarClienteInput {

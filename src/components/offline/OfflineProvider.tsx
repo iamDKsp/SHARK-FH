@@ -401,14 +401,18 @@ export function OfflineProvider({ children }: { children: React.ReactNode }) {
 
       const opById = new Map(ops.map((o) => [o.operationId, o]));
       const pdfsParaEnviar: SyncWhatsappPdfMeta[] = [];
+      const linkedClientsNames: string[] = [];
 
       for (const r of resp.results) {
         const op = opById.get(r.operationId);
         if (!op) continue;
 
         if (r.status === "synced" || r.status === "already_synced") {
-          await markOperationSynced(uid, op);
+          await markOperationSynced(uid, op, r);
           synced++;
+          if (r.matchedByPhone && r.linkedCliente?.nome) {
+            linkedClientsNames.push(r.linkedCliente.nome);
+          }
           if (r.whatsappPdfMeta && r.status === "synced") {
             pdfsParaEnviar.push(r.whatsappPdfMeta);
           }
@@ -430,11 +434,17 @@ export function OfflineProvider({ children }: { children: React.ReactNode }) {
       bumpRevision();
 
       if (synced > 0) {
-        showToast(
-          synced === 1
-            ? "1 ação sincronizada com sucesso!"
-            : `${synced} ações sincronizadas com sucesso!`
-        );
+        if (linkedClientsNames.length > 0) {
+          showToast(
+            `Telefone já cadastrado: "${linkedClientsNames[0]}" foi vinculado automaticamente sem duplicar!`
+          );
+        } else {
+          showToast(
+            synced === 1
+              ? "1 ação sincronizada com sucesso!"
+              : `${synced} ações sincronizadas com sucesso!`
+          );
+        }
         // Atualiza o cache local com os dados frescos do servidor
         await syncBootstrap(true);
         try {
@@ -599,7 +609,7 @@ export function OfflineProvider({ children }: { children: React.ReactNode }) {
             if (!item) continue;
             if (r.operationId === op.operationId) targetResult = r;
             if (r.status === "synced" || r.status === "already_synced") {
-              await markOperationSynced(uid, item);
+              await markOperationSynced(uid, item, r);
               if (r.whatsappPdfMeta && r.status === "synced") {
                 await enviarPdfWhatsappCliente(r.whatsappPdfMeta);
               }

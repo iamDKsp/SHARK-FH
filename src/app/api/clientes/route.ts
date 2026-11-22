@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
+import { buscarClientePorTelefone } from "@/lib/services/clienteService";
 
 // Remove acentos e normaliza para comparação (usado no fallback JS)
 const norm = (s: string) =>
@@ -29,6 +30,30 @@ async function checkUnaccentSupport(): Promise<boolean> {
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
+  const telefoneParam = searchParams.get("telefone");
+
+  if (telefoneParam !== null) {
+    try {
+      const cliente = await buscarClientePorTelefone(telefoneParam);
+      return NextResponse.json(
+        {
+          cliente: cliente
+            ? {
+                id: cliente.id,
+                nome: cliente.nome,
+                telefone: cliente.telefone,
+                cidade: cliente.cidade,
+              }
+            : null,
+        },
+        { headers: { "Cache-Control": "no-store" } }
+      );
+    } catch (error) {
+      console.error("Erro na verificação de telefone de cliente:", error);
+      return NextResponse.json({ error: "Erro interno no servidor" }, { status: 500 });
+    }
+  }
+
   const query = searchParams.get("query") || "";
   const page = Number(searchParams.get("page")) || 1;
   const limit = Number(searchParams.get("limit")) || 15;
