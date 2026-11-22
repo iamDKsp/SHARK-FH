@@ -2,11 +2,12 @@
 
 import { createEmprestimo } from "@/app/emprestimos/novo/actions";
 import Link from "next/link";
-import { ArrowLeft, Save, Loader2, Calendar, User, Wallet, Settings, FileText, CheckCircle2, ChevronRight, Calculator, MessageSquare, X } from "lucide-react";
-import { useState, useEffect, useTransition } from "react";
+import { ArrowLeft, Save, Loader2, Calendar, User, UserPlus, Wallet, Settings, FileText, CheckCircle2, ChevronRight, Calculator, MessageSquare, X } from "lucide-react";
+import { useState, useEffect, useMemo, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import SearchableSelect from "@/components/SearchableSelect";
 import AtrasoField from "@/components/AtrasoField";
+import ModalClienteRapido, { type ClienteRapidoCriado } from "@/components/ModalClienteRapido";
 import { generateUuid, useOffline } from "@/components/offline/OfflineProvider";
 import type { TipoAtraso } from "@/lib/jurosAtraso";
 
@@ -60,7 +61,47 @@ export default function FormNovoEmprestimo({ clientes, parceiros, clienteIdParam
 
   // Inputs Comuns
   const [clienteId, setClienteId] = useState(clienteIdParam || "");
+  const [clientesLocais, setClientesLocais] = useState<Cliente[]>([]);
+  const [showQuickClientModal, setShowQuickClientModal] = useState(false);
+  const [quickClientInitialSearch, setQuickClientInitialSearch] = useState("");
+  const [recentQuickClientId, setRecentQuickClientId] = useState<string | null>(null);
   const [parceiroId, setParceiroId] = useState("");
+
+  // Mescla clientes do cache/servidor com recém-criados para seleção imediata sem flicker
+  const todosClientes = useMemo(() => {
+    const map = new Map<string, Cliente>();
+    for (const c of clientes) map.set(c.id, c);
+    for (const c of clientesLocais) {
+      if (!map.has(c.id)) map.set(c.id, c);
+    }
+    return Array.from(map.values()).sort((a, b) => {
+      if (Boolean(a.pendingSync) !== Boolean(b.pendingSync)) return a.pendingSync ? -1 : 1;
+      return a.nome.localeCompare(b.nome, "pt-BR", { sensitivity: "base" });
+    });
+  }, [clientes, clientesLocais]);
+
+  const openQuickClientModal = (initialSearch = "") => {
+    setQuickClientInitialSearch(initialSearch);
+    setShowQuickClientModal(true);
+  };
+
+  const handleQuickClientCreated = (novo: ClienteRapidoCriado) => {
+    setClientesLocais((prev) => {
+      const semDuplicado = prev.filter((c) => c.id !== novo.id);
+      return [
+        ...semDuplicado,
+        {
+          id: novo.id,
+          nome: novo.nome,
+          rawNome: novo.rawNome,
+          telefone: novo.telefone,
+          pendingSync: novo.pendingSync,
+        },
+      ];
+    });
+    setClienteId(novo.id);
+    setRecentQuickClientId(novo.id);
+  };
   const [valor, setValor] = useState<number>(0);
   const [tipoPagamento, setTipoPagamento] = useState<TipoPagamento>("a_vista_juros");
   const [frequencia, setFrequencia] = useState<Frequencia>("mensal");
@@ -235,7 +276,7 @@ export default function FormNovoEmprestimo({ clientes, parceiros, clienteIdParam
     setShowOverlay(true);
     setOverlayStep(1); // Processando e calculando parcelas
 
-    const cli = clientes.find((c) => c.id === clienteId);
+    const cli = todosClientes.find((c) => c.id === clienteId);
     const parc = parceiros.find((p) => p.id === parceiroId);
     const atrasoTipoBruto = String(formData.get("atrasoTipo") ?? "nenhum");
     const atrasoTipo: TipoAtraso =
@@ -326,24 +367,47 @@ export default function FormNovoEmprestimo({ clientes, parceiros, clienteIdParam
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2">
-                <label htmlFor="clienteId" className="text-sm font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1">
-                  Pessoa <span className="text-rose-500">*</span>
-                </label>
+                <div className="flex items-center justify-between gap-2 min-h-[28px]">
+                  <label htmlFor="clienteId" className="text-sm font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1">
+                    Pessoa <span className="text-rose-500">*</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => openQuickClientModal("")}
+                    className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 hover:border-emerald-300 px-2.5 py-1 rounded-lg shadow-2xs transition-all cursor-pointer btn-press"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span>Novo cliente</span>
+                  </button>
+                </div>
                 <div className="bg-slate-50 border border-slate-200 rounded-xl focus-within:ring-2 focus-within:ring-emerald-500 hover:border-emerald-400 transition-colors">
                   <SearchableSelect
                     name="clienteId"
                     value={clienteId}
-                    onChange={setClienteId}
-                    options={clientes}
+                    onChange={(id) => {
+                      setClienteId(id);
+                      if (id !== recentQuickClientId) setRecentQuickClientId(null);
+                    }}
+                    options={todosClientes}
                     placeholder="Selecione uma pessoa..."
+                    onCreateNew={(q) => openQuickClientModal(q)}
+                    createNewLabel="Cadastrar cliente rápido"
                   />
                 </div>
+                {recentQuickClientId && clienteId === recentQuickClientId && (
+                  <p className="text-xs text-emerald-700 font-semibold flex items-center gap-1.5 pt-0.5 animate-in fade-in slide-in-from-top-1 duration-200">
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-600 animate-pop" />
+                    <span>Cliente criado e vinculado! Você pode completar o cadastro na aba Clientes depois.</span>
+                  </p>
+                )}
               </div>
 
               <div className="space-y-2">
-                <label htmlFor="parceiroId" className="text-sm font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1">
-                  Quem Emprestou? <span className="text-rose-500">*</span>
-                </label>
+                <div className="flex items-center min-h-[28px]">
+                  <label htmlFor="parceiroId" className="text-sm font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1">
+                    Quem Emprestou? <span className="text-rose-500">*</span>
+                  </label>
+                </div>
                 <select
                   id="parceiroId"
                   name="parceiroId"
@@ -800,9 +864,22 @@ export default function FormNovoEmprestimo({ clientes, parceiros, clienteIdParam
         </div>
       </form>
 
+      {/* Modal de Cadastro Rápido de Cliente */}
+      <ModalClienteRapido
+        isOpen={showQuickClientModal}
+        initialSearch={quickClientInitialSearch}
+        clientesExistentes={todosClientes}
+        onClose={() => setShowQuickClientModal(false)}
+        onCreated={handleQuickClientCreated}
+        onSelectExisting={(existingId) => {
+          setClienteId(existingId);
+          setRecentQuickClientId(null);
+        }}
+      />
+
       {/* Modal de Confirmação: Avisar ou não no WhatsApp ao criar empréstimo */}
       {showConfirmWaModal && (() => {
-        const cli = clientes.find((c) => c.id === clienteId);
+        const cli = todosClientes.find((c) => c.id === clienteId);
         const totalSim = parcelasFinais.reduce((acc, p) => acc + p.valor, 0);
         return (
           <div
