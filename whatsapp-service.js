@@ -5,8 +5,6 @@ const {
   makeCacheableSignalKeyStore,
   generateWAMessageFromContent,
   generateMessageIDV2,
-  isJidGroup,
-  proto,
 } = require("@whiskeysockets/baileys");
 const http = require("http");
 const crypto = require("crypto");
@@ -115,21 +113,6 @@ async function connectToWhatsApp() {
   });
 
   sock.ev.on("creds.update", saveCreds);
-
-  // Captura apenas mensagens interativas (ex.: Pix nativo enviado pelo celular) para diagnóstico do protocolo
-  sock.ev.on("messages.upsert", ({ messages }) => {
-    for (const m of messages || []) {
-      const msg = m?.message;
-      if (!msg) continue;
-      const raw = JSON.stringify(msg);
-      if (raw.includes("interactiveMessage") || raw.includes("payment_info") || raw.includes("pix_static_code") || raw.includes("nativeFlowMessage")) {
-        console.log("[WhatsApp][DEBUG-INTERACTIVE]", JSON.stringify({
-          key: m.key,
-          message: msg,
-        }));
-      }
-    }
-  });
 }
 
 async function resolveWhatsAppJid(phone) {
@@ -227,16 +210,6 @@ function normalizePixPayload(pix) {
   const footerText = typeof pix?.footer === "string" ? pix.footer.trim() : "";
 
   return { key: cleanKey, keyType, merchantName, bodyText, footerText };
-}
-
-function formatPixKeyDisplay(key, keyType) {
-  if (keyType === "CNPJ" && key.length === 14) {
-    return key.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5");
-  }
-  if (keyType === "CPF" && key.length === 11) {
-    return key.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, "$1.$2.$3-$4");
-  }
-  return key;
 }
 
 function generatePixReferenceId() {
