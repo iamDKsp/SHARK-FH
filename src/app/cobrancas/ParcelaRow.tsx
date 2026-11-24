@@ -16,6 +16,7 @@ import {
   MoreHorizontal,
   PauseCircle,
   Phone,
+  QrCode,
   RefreshCw,
   TrendingUp,
   User,
@@ -52,6 +53,7 @@ interface ParcelaRowProps {
   onToggle: (id: string, checked: boolean) => void;
   onCobrar: (p: Parcela, tipo: TipoCobranca) => void;
   onCopiar: (p: Parcela) => void;
+  onEnviarPix?: (p: Parcela) => void;
   onAcaoEmprestimo: (p: Parcela, acao: TipoAcaoEmprestimo) => void;
   modoCarencia?: boolean;
   modoCarencia10?: boolean;
@@ -91,10 +93,12 @@ function StatusBlock({ p, cobradoHoje, ultimoEnvio, modoCarencia, modoCarencia10
 function MenuLinha({
   p,
   onCopiar,
+  onEnviarPix,
   onAcaoEmprestimo,
 }: {
   p: Parcela;
   onCopiar: (p: Parcela) => void;
+  onEnviarPix?: (p: Parcela) => void;
   onAcaoEmprestimo: (p: Parcela, acao: TipoAcaoEmprestimo) => void;
 }) {
   const [aberto, setAberto] = useState(false);
@@ -245,6 +249,19 @@ function MenuLinha({
             <a role="menuitem" href={telLink(p.emprestimo.cliente.telefone)} onClick={() => setAberto(false)} className={itemCls}>
               <Phone className="w-4 h-4 text-slate-400 shrink-0" /> Ligar
             </a>
+            {onEnviarPix && (
+              <button
+                role="menuitem"
+                type="button"
+                onClick={() => {
+                  onEnviarPix(p);
+                  setAberto(false);
+                }}
+                className={itemCls}
+              >
+                <QrCode className="w-4 h-4 text-emerald-600 shrink-0" /> Enviar botão Pix
+              </button>
+            )}
             <button
               role="menuitem"
               type="button"
@@ -263,7 +280,7 @@ function MenuLinha({
   );
 }
 
-function ParcelaRowBase({ p, index, tema, tipo, selecionado, cobradoHoje, ultimoEnvio, onToggle, onCobrar, onCopiar, onAcaoEmprestimo, modoCarencia, modoCarencia10, sub = false }: ParcelaRowProps) {
+function ParcelaRowBase({ p, index, tema, tipo, selecionado, cobradoHoje, ultimoEnvio, onToggle, onCobrar, onCopiar, onEnviarPix, onAcaoEmprestimo, modoCarencia, modoCarencia10, sub = false }: ParcelaRowProps) {
   const cliente = p.emprestimo.cliente;
   const sev = severidade(p.diasAtraso, modoCarencia, modoCarencia10);
   const semTelefone = !cliente.telefone?.replace(/\D/g, "");
@@ -384,7 +401,7 @@ function ParcelaRowBase({ p, index, tema, tipo, selecionado, cobradoHoje, ultimo
           <span className="hidden sm:inline md:hidden xl:inline">Empréstimo</span>
         </Link>
 
-        <MenuLinha p={p} onCopiar={onCopiar} onAcaoEmprestimo={onAcaoEmprestimo} />
+        <MenuLinha p={p} onCopiar={onCopiar} onEnviarPix={onEnviarPix} onAcaoEmprestimo={onAcaoEmprestimo} />
       </div>
     </div>
   );
@@ -411,6 +428,7 @@ interface GrupoParcelaRowProps {
   onToggleGrupo: (ids: string[], checked: boolean) => void;
   onCobrar: (p: Parcela, tipo: TipoCobranca) => void;
   onCopiar: (p: Parcela) => void;
+  onEnviarPix?: (p: Parcela) => void;
   onAcaoEmprestimo: (p: Parcela, acao: TipoAcaoEmprestimo) => void;
   modoCarencia?: boolean;
   modoCarencia10?: boolean;
@@ -431,6 +449,7 @@ export function GrupoParcelaRow({
   onToggleGrupo,
   onCobrar,
   onCopiar,
+  onEnviarPix,
   onAcaoEmprestimo,
   modoCarencia,
   modoCarencia10,
@@ -594,6 +613,7 @@ export function GrupoParcelaRow({
                   onToggle={onToggleParcela}
                   onCobrar={onCobrar}
                   onCopiar={onCopiar}
+                  onEnviarPix={onEnviarPix}
                   onAcaoEmprestimo={onAcaoEmprestimo}
                   modoCarencia={modoCarencia}
                   modoCarencia10={modoCarencia10}

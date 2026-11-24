@@ -20,6 +20,7 @@ import {
   X,
 } from "lucide-react";
 import { registrarCobrancaManual } from "./actions";
+import { enviarBotaoPixCliente } from "@/app/mensagens/actions";
 import ParcelaRow, { GrupoParcelaRow } from "./ParcelaRow";
 import DisparoModal from "./DisparoModal";
 import AcaoEmprestimoModal from "./AcaoEmprestimoModal";
@@ -352,6 +353,27 @@ export default function ClientCobrancasView({ atrasadosOntem, atrasadosAnteriore
     [mostrarToast]
   );
 
+  const onEnviarPix = useCallback(
+    async (p: Parcela) => {
+      const nome = p.emprestimo.cliente.nome.split(" ")[0];
+      mostrarToast(`Enviando botão Pix para ${nome}…`);
+      try {
+        const res = await enviarBotaoPixCliente({
+          clienteId: p.emprestimo.cliente.id,
+          parcelaId: p.id,
+        });
+        if (res.ok) {
+          mostrarToast(`Botão Pix enviado para ${nome}`);
+        } else {
+          mostrarToast(res.erro || "Falha ao enviar botão Pix", true);
+        }
+      } catch {
+        mostrarToast("Falha de conexão com o WhatsApp", true);
+      }
+    },
+    [mostrarToast]
+  );
+
   const onAcaoEmprestimo = useCallback((parcela: Parcela, acao: TipoAcaoEmprestimo) => {
     if (acao === "passar_funcionario") {
       setPassarAlvo([parcela]);
@@ -677,6 +699,7 @@ export default function ClientCobrancasView({ atrasadosOntem, atrasadosAnteriore
                     onToggle={onToggle}
                     onCobrar={onCobrar}
                     onCopiar={onCopiar}
+                    onEnviarPix={onEnviarPix}
                     onAcaoEmprestimo={onAcaoEmprestimo}
                     modoCarencia={modoCarencia}
                     modoCarencia10={modoCarencia10}
@@ -698,6 +721,7 @@ export default function ClientCobrancasView({ atrasadosOntem, atrasadosAnteriore
                     onToggleGrupo={onToggleGrupo}
                     onCobrar={onCobrar}
                     onCopiar={onCopiar}
+                    onEnviarPix={onEnviarPix}
                     onAcaoEmprestimo={onAcaoEmprestimo}
                     modoCarencia={modoCarencia}
                     modoCarencia10={modoCarencia10}

@@ -4,9 +4,9 @@ import { useState, useMemo, useEffect, useTransition } from "react";
 import { useUrlState } from "@/hooks/useUrlState";
 import { useScrollRestoration } from "@/hooks/useScrollRestoration";
 import Link from "next/link";
-import { Search, Calendar, MessageCircle, ArrowUpDown, ArrowDownUp, Clock, ChevronLeft, ChevronRight, CheckCircle2, AlertCircle, X, Send, Settings, Plus, Trash2, Loader2, ChevronDown, RefreshCw, PauseCircle, Layers, TrendingUp } from "lucide-react";
+import { Search, Calendar, MessageCircle, ArrowUpDown, ArrowDownUp, Clock, ChevronLeft, ChevronRight, CheckCircle2, AlertCircle, X, Send, Settings, Plus, Trash2, Loader2, ChevronDown, RefreshCw, PauseCircle, Layers, TrendingUp, QrCode } from "lucide-react";
 import { receberSoJurosEmprestimo } from "@/app/emprestimos/[id]/actions";
-import { enviarMensagemManual, listarRespostasRapidas } from "@/app/mensagens/actions";
+import { enviarBotaoPixCliente, enviarMensagemManual, listarRespostasRapidas } from "@/app/mensagens/actions";
 import { hojeEmBrasilia } from "@/lib/dateUtils";
 import { calcularJurosAtraso } from "@/lib/jurosAtraso";
 import ClienteAvatar from "@/components/ClienteAvatar";
@@ -389,6 +389,24 @@ export default function EmprestimosListWrapper({
         alert(`Falha ao enviar: ${res.erro || "Erro desconhecido"}`);
       }
     } catch (err) {
+      alert("Falha de conexão. O serviço do WhatsApp está rodando?");
+    } finally {
+      setIsWaSending(false);
+    }
+  };
+
+  const sendWaPixButton = async () => {
+    if (!waSelectedEmp) return;
+    setIsWaSending(true);
+    try {
+      const res = await enviarBotaoPixCliente({ clienteId: waSelectedEmp.cliente.id });
+      if (res.ok) {
+        closeWaModal();
+        alert("Botão Pix enviado com sucesso!");
+      } else {
+        alert(`Falha ao enviar botão Pix: ${res.erro || "Erro desconhecido"}`);
+      }
+    } catch {
       alert("Falha de conexão. O serviço do WhatsApp está rodando?");
     } finally {
       setIsWaSending(false);
@@ -1753,11 +1771,20 @@ export default function EmprestimosListWrapper({
               </div>
             </div>
             
-            <div className="p-5 border-t border-slate-100 bg-slate-50 flex justify-end">
+            <div className="p-5 border-t border-slate-100 bg-slate-50 flex flex-col sm:flex-row justify-between gap-2">
+              <button
+                type="button"
+                onClick={sendWaPixButton}
+                disabled={isWaSending}
+                className="flex items-center justify-center gap-2 bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-300 px-4 py-2.5 rounded-xl font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer text-xs sm:text-sm"
+              >
+                {isWaSending ? <Loader2 className="w-4 h-4 animate-spin" /> : <QrCode className="w-4 h-4" />}
+                Enviar botão Pix
+              </button>
               <button 
                 onClick={() => sendWaMsg(waCustomMsg)}
                 disabled={!waCustomMsg.trim() || isWaSending}
-                className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl font-bold shadow-md shadow-emerald-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                className="flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl font-bold shadow-md shadow-emerald-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer text-xs sm:text-sm"
               >
                 {isWaSending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                 {isWaSending ? "Enviando..." : "Enviar Mensagem"}

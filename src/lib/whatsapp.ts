@@ -1,3 +1,13 @@
+import type { PixTipoChave } from "./pix";
+
+export interface PixButtonPayload {
+  key: string;
+  keyType: PixTipoChave;
+  merchantName: string;
+  text?: string;
+  footer?: string;
+}
+
 export function getWhatsappApiUrl(): string {
   let url = process.env.WHATSAPP_API_URL || "http://179.127.59.225:3529";
   url = url.trim();
@@ -78,6 +88,45 @@ export async function sendWhatsappDocument(
     return { success: true };
   } catch (err: any) {
     console.error("Erro ao enviar documento WhatsApp:", err?.message || err);
+    return {
+      success: false,
+      error: err?.message || "Falha de conexão com o servidor do WhatsApp.",
+    };
+  }
+}
+
+export async function sendWhatsappPixButton(
+  phone: string,
+  pix: PixButtonPayload
+): Promise<{ success: boolean; error?: string }> {
+  if (!phone || !pix?.key) {
+    return { success: false, error: "Telefone ou chave Pix inválida." };
+  }
+
+  const WHATSAPP_API = getWhatsappApiUrl();
+
+  try {
+    const res = await fetch(`${WHATSAPP_API}/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          {
+            phone,
+            pix,
+          },
+        ],
+      }),
+      signal: AbortSignal.timeout(12000),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { success: false, error: data?.error || `Status HTTP ${res.status}` };
+    }
+    return { success: true };
+  } catch (err: any) {
+    console.error("Erro ao enviar botão Pix WhatsApp:", err?.message || err);
     return {
       success: false,
       error: err?.message || "Falha de conexão com o servidor do WhatsApp.",

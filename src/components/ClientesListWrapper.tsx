@@ -4,8 +4,8 @@ import { useEffect, useState, useRef } from "react";
 import { useUrlState } from "@/hooks/useUrlState";
 import { useScrollRestoration } from "@/hooks/useScrollRestoration";
 import Link from "next/link";
-import { Plus, Search, MessageCircle, Loader2, X, Send, Settings, Trash2, Clock, CloudOff } from "lucide-react";
-import { enviarMensagemManual, listarRespostasRapidas } from "@/app/mensagens/actions";
+import { Plus, Search, MessageCircle, Loader2, X, Send, Settings, Trash2, Clock, CloudOff, QrCode } from "lucide-react";
+import { enviarBotaoPixCliente, enviarMensagemManual, listarRespostasRapidas } from "@/app/mensagens/actions";
 import { useOffline } from "@/components/offline/OfflineProvider";
 import { searchCachedClientes } from "@/lib/offline/db";
 
@@ -76,6 +76,23 @@ export default function ClientesListWrapper({ initialQuery = "" }: { initialQuer
         alert(`Falha ao enviar: ${res.erro || "Erro desconhecido"}`);
       }
     } catch (err) {
+      alert("Falha de conexão. O serviço do WhatsApp está rodando?");
+    } finally {
+      setIsWaSending(false);
+    }
+  };
+
+  const sendWaPixButton = async () => {
+    if (!waSelectedCliente) return;
+    setIsWaSending(true);
+    try {
+      const res = await enviarBotaoPixCliente({ clienteId: waSelectedCliente.id });
+      if (res.ok) {
+        closeWaModal();
+      } else {
+        alert(`Falha ao enviar botão Pix: ${res.erro || "Erro desconhecido"}`);
+      }
+    } catch {
       alert("Falha de conexão. O serviço do WhatsApp está rodando?");
     } finally {
       setIsWaSending(false);
@@ -399,7 +416,16 @@ export default function ClientesListWrapper({ initialQuery = "" }: { initialQuer
               </div>
             </div>
             
-            <div className="p-4 sm:p-5 border-t border-slate-100 bg-slate-50 flex justify-end shrink-0 pb-[max(1rem,env(safe-area-inset-bottom))]">
+            <div className="p-4 sm:p-5 border-t border-slate-100 bg-slate-50 flex flex-col sm:flex-row justify-between gap-2 shrink-0 pb-[max(1rem,env(safe-area-inset-bottom))]">
+              <button
+                type="button"
+                onClick={sendWaPixButton}
+                disabled={isWaSending}
+                className="w-full sm:w-auto flex items-center justify-center gap-2 bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-300 px-4 py-2.5 rounded-xl font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer active:scale-95 text-xs sm:text-sm"
+              >
+                {isWaSending ? <Loader2 className="w-4 h-4 animate-spin" /> : <QrCode className="w-4 h-4" />}
+                <span>Enviar botão Pix</span>
+              </button>
               <button 
                 onClick={() => sendWaMsg(waCustomMsg)}
                 disabled={!waCustomMsg.trim() || isWaSending}

@@ -1,3 +1,5 @@
+import type { PixTipoChave } from "@/lib/pix";
+
 /**
  * Catálogo ÚNICO de mensagens WhatsApp do sistema.
  *
@@ -269,15 +271,21 @@ export function chaveCobranca(
 
 export interface ConfiguracoesBase {
   pix_chave: string;
+  pix_tipo: PixTipoChave;
   pix_titular: string;
+  pix_banco: string;
+  pix_enviar_botao: boolean;
   empresa_nome: string;
 }
 
-/** Sem dados pessoais como padrão: cada base cadastra o seu Pix. */
+/** Dados padrão do Pix e da empresa (podem ser editados em Configurações → Mensagens → Pix e empresa). */
 export const CONFIG_PADRAO: ConfiguracoesBase = {
-  pix_chave: "",
-  pix_titular: "",
-  empresa_nome: "Soluções Financeiras",
+  pix_chave: "54.240.232/0001-46",
+  pix_tipo: "CNPJ",
+  pix_titular: "Fh soluções empresariais",
+  pix_banco: "Banco Santander",
+  pix_enviar_botao: true,
+  empresa_nome: "Fh soluções empresariais",
 };
 
 export const RESPOSTAS_RAPIDAS_PADRAO: string[] = [

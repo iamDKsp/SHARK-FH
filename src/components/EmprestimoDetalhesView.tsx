@@ -8,7 +8,7 @@ import {
   Clock, CheckCircle2, X, Loader2, Phone, TrendingUp,
   RefreshCw, CalendarClock, ShieldOff, Shield, Layers,
   BadgeCheck, AlertTriangle, ChevronRight, Wallet, DollarSign, Pencil,
-  FileDown, Send, PauseCircle, PlayCircle
+  FileDown, Send, PauseCircle, PlayCircle, QrCode
 } from "lucide-react";
 import { 
   payNextInstallment, payFullLoan, renegociarEmprestimo,
@@ -19,7 +19,7 @@ import {
 
 import { listarFuncionarios } from "@/app/configuracoes/funcionarios/actions"; // <-- Import added
 
-import { enviarMensagemManual, legendaCronograma, listarRespostasRapidas } from "@/app/mensagens/actions";
+import { enviarBotaoPixCliente, enviarMensagemManual, legendaCronograma, listarRespostasRapidas } from "@/app/mensagens/actions";
 import { hojeEmBrasilia } from "@/lib/dateUtils";
 import { calcularJurosAtraso, descreverRegraAtraso, regraAtiva } from "@/lib/jurosAtraso";
 import { baixarCronogramaPdfCliente, obterCronogramaPdfBase64 } from "@/lib/cronogramaPdf";
@@ -777,6 +777,22 @@ export default function EmprestimoDetalhesView({
         alert(`Erro ao enviar mensagem: ${res.erro || "tente novamente"}`);
       }
     } catch (err) {
+      alert("Falha de conexão. Verifique se o serviço do WhatsApp está rodando.");
+    }
+    setIsWaSending(false);
+  };
+
+  const sendWaPixButton = async () => {
+    setIsWaSending(true);
+    try {
+      const res = await enviarBotaoPixCliente({ clienteId: emprestimo.cliente.id });
+      if (res.ok) {
+        alert("Botão Pix enviado com sucesso!");
+        closeModal();
+      } else {
+        alert(`Erro ao enviar botão Pix: ${res.erro || "tente novamente"}`);
+      }
+    } catch {
       alert("Falha de conexão. Verifique se o serviço do WhatsApp está rodando.");
     }
     setIsWaSending(false);
@@ -1978,11 +1994,20 @@ export default function EmprestimoDetalhesView({
               </div>
             </div>
             
-            <div className="p-5 border-t border-slate-100 bg-slate-50 flex justify-end">
+            <div className="p-5 border-t border-slate-100 bg-slate-50 flex flex-col sm:flex-row justify-between gap-2">
+              <button
+                type="button"
+                onClick={sendWaPixButton}
+                disabled={isWaSending}
+                className="flex items-center justify-center gap-2 bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-300 px-4 py-2.5 rounded-xl font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer text-xs sm:text-sm"
+              >
+                {isWaSending ? <Loader2 className="w-4 h-4 animate-spin" /> : <QrCode className="w-4 h-4" />}
+                Enviar botão Pix
+              </button>
               <button 
                 onClick={() => sendWaMsg(waCustomMsg)}
                 disabled={!waCustomMsg.trim() || isWaSending}
-                className="flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl font-bold shadow-md shadow-emerald-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                className="flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl font-bold shadow-md shadow-emerald-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer text-xs sm:text-sm"
               >
                 {isWaSending ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                 {isWaSending ? "Enviando..." : "Enviar Mensagem"}

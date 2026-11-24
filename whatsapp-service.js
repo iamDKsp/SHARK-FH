@@ -1,4 +1,11 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, makeCacheableSignalKeyStore } = require("@whiskeysockets/baileys");
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  makeCacheableSignalKeyStore,
+  generateWAMessageFromContent,
+  proto,
+} = require("@whiskeysockets/baileys");
 const http = require("http");
 const QRCode = require("qrcode");
 const path = require("path");
@@ -153,6 +160,146 @@ async function resolveWhatsAppJid(phone) {
   return candidates[0] + "@s.whatsapp.net";
 }
 
+function normalizePixPayload(pix) {
+  const rawKey = String(pix?.key || "").replace(/\([^)]*\)/g, " ").trim();
+  if (!rawKey) {
+    throw new Error("Chave Pix não informada.");
+  }
+
+  let keyType = String(pix?.keyType || "").trim().toUpperCase();
+  const validTypes = ["CNPJ", "CPF", "EMAIL", "PHONE", "EVP"];
+  if (!validTypes.includes(keyType)) {
+    const digits = rawKey.replace(/\D/g, "");
+    if (/[^\s()<>]+@[^\s()<>]+\.[^\s()<>]+/.test(rawKey)) keyType = "EMAIL";
+    else if (/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(rawKey)) keyType = "EVP";
+    else if (digits.length === 14) keyType = "CNPJ";
+    else if (digits.length === 11 && /\d{3}\.\d{3}\.\d{3}-\d{2}/.test(rawKey)) keyType = "CPF";
+    else if (digits.length >= 10 && digits.length <= 13) keyType = "PHONE";
+    else keyType = "CNPJ";
+  }
+
+  let cleanKey = rawKey;
+  if (keyType === "CNPJ" || keyType === "CPF") {
+    cleanKey = rawKey.replace(/\D/g, "");
+    const expected = keyType === "CNPJ" ? 14 : 11;
+    if (cleanKey.length !== expected) {
+      throw new Error(`Chave Pix ${keyType} inválida (esperado ${expected} dígitos).`);
+    }
+  } else if (keyType === "PHONE") {
+    const digits = rawKey.replace(/\D/g, "");
+    if (digits.length === 10 || digits.length === 11) {
+      cleanKey = `+55${digits}`;
+    } else if (digits.length >= 12 && digits.length <= 15) {
+      cleanKey = `+${digits}`;
+    } else {
+      throw new Error("Chave Pix de telefone inválida.");
+    }
+  } else if (keyType === "EMAIL") {
+    const m = rawKey.match(/[^\s()<>]+@[^\s()<>]+\.[^\s()<>]+/);
+    if (!m) throw new Error("Chave Pix de e-mail inválida.");
+    cleanKey = m[0].trim().toLowerCase();
+  } else if (keyType === "EVP") {
+    const m = rawKey.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    if (!m) throw new Error("Chave Pix aleatória (EVP) inválida.");
+    cleanKey = m[0].trim().toLowerCase();
+  }
+
+  const merchantName = String(pix?.merchantName || "Pix").trim().slice(0, 60) || "Pix";
+  const bodyText = typeof pix?.text === "string" ? pix.text.trim() : "";
+  const footerText = typeof pix?.footer === "string" ? pix.footer.trim() : "";
+
+  return { key: cleanKey, keyType, merchantName, bodyText, footerText };
+}
+
+async function sendPixButtonMessage(jid, pix) {
+  const { key, keyType, merchantName, bodyText, footerText } = normalizePixPayload(pix);
+
+  const buttonParams = {
+    currency: "BRL",
+    total_amount: { value: 0, offset: 100 },
+    payment_settings: [
+      {
+        type: "pix_static_code",
+        pix_static_code: {
+          merchant_name: merchantName,
+          key,
+          key_type: keyType,
+        },
+      },
+    ],
+  };
+
+  const interactivePayload = {
+    nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
+      buttons: [
+        {
+          name: "payment_info",
+          buttonParamsJson: JSON.stringify(buttonParams),
+        },
+      ],
+    }),
+  };
+
+  if (bodyText) {
+    interactivePayload.body = proto.Message.InteractiveMessage.Body.create({
+      text: bodyText,
+    });
+  }
+  if (footerText) {
+    interactivePayload.footer = proto.Message.InteractiveMessage.Footer.create({
+      text: footerText,
+    });
+  }
+
+  const fullMsg = generateWAMessageFromContent(
+    jid,
+    {
+      viewOnceMessage: {
+        message: {
+          messageContextInfo: {
+            deviceListMetadata: {},
+            deviceListMetadataVersion: 2,
+          },
+          interactiveMessage: proto.Message.InteractiveMessage.create(interactivePayload),
+        },
+      },
+    },
+    { userJid: sock?.user?.id }
+  );
+
+  const additionalNodes = [
+    {
+      tag: "biz",
+      attrs: {},
+      content: [
+        {
+          tag: "interactive",
+          attrs: { type: "native_flow", v: "1" },
+          content: [
+            {
+              tag: "native_flow",
+              attrs: { v: "2", name: "payment_info" },
+            },
+          ],
+        },
+      ],
+    },
+  ];
+
+  if (!jid.endsWith("@g.us")) {
+    additionalNodes.push({
+      tag: "bot",
+      attrs: { biz_bot: "1" },
+    });
+  }
+
+  console.log(`[WhatsApp] Sending Pix button (${keyType}) to: ${jid}`);
+  await sock.relayMessage(jid, fullMsg.message, {
+    messageId: fullMsg.key.id,
+    additionalNodes,
+  });
+}
+
 // Start WhatsApp socket connection
 connectToWhatsApp().catch(err => console.error("Error in Baileys startup:", err));
 
@@ -233,7 +380,9 @@ const server = http.createServer(async (req, res) => {
         for (const item of messages) {
           const jid = await resolveWhatsAppJid(item.phone);
           console.log(`Sending message to: ${jid}`);
-          if (item.document) {
+          if (item.pix) {
+            await sendPixButtonMessage(jid, item.pix);
+          } else if (item.document) {
             const docBuffer = Buffer.isBuffer(item.document)
               ? item.document
               : Buffer.from(item.document, "base64");
@@ -250,7 +399,9 @@ const server = http.createServer(async (req, res) => {
           logs.push({ phone: item.phone, jid, status: "sent" });
           
           // delay to mitigate anti-spam restrictions
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          if (messages.length > 1) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
         }
 
         res.writeHead(200, { "Content-Type": "application/json" });

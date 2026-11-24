@@ -7,6 +7,7 @@ import {
   ArrowDown,
   ArrowUp,
   CheckCircle2,
+  Copy,
   Download,
   Loader2,
   Plus,
@@ -26,7 +27,15 @@ import {
 } from "@/lib/mensagens/catalogo";
 import { renderizar, validarTexto } from "@/lib/mensagens/render";
 import {
+  PIX_TIPOS,
+  detectarTipoChavePix,
+  formatarChavePixExibicao,
+  limparChavePix,
+  type PixTipoChave,
+} from "@/lib/pix";
+import {
   enviarTeste,
+  enviarTesteBotaoPix,
   importarModelosAntigos,
   restaurarMensagem,
   salvarConfiguracoes,
@@ -203,7 +212,9 @@ function CardMensagem({ m, telefoneTeste }: { m: MensagemEditavel; telefoneTeste
       const r = await enviarTeste(m.chave, texto, telefoneTeste);
       setStatus(
         r.ok
-          ? { tipo: "ok", texto: "Teste enviado para o seu WhatsApp (com dados fictícios)." }
+          ? r.avisos && r.avisos.length > 0
+            ? { tipo: "aviso", texto: r.avisos.join(" ") }
+            : { tipo: "ok", texto: "Teste enviado para o seu WhatsApp (com dados fictícios)." }
           : { tipo: "erro", texto: r.erro || "Falha ao enviar o teste." }
       );
     });
@@ -469,11 +480,17 @@ function SecaoRespostas({ inicial }: { inicial: string[] }) {
 // Pix e empresa
 // ─────────────────────────────────────────────────────────────────────────────
 
-function SecaoPix({ inicial }: { inicial: ConfiguracoesBase }) {
+function SecaoPix({ inicial, telefoneTeste }: { inicial: ConfiguracoesBase; telefoneTeste: string }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+  const [testandoPix, startTestePix] = useTransition();
   const [cfg, setCfg] = useState<ConfiguracoesBase>(inicial);
   const [status, setStatus] = useState<Status>(null);
+
+  const chaveLimpa = useMemo(
+    () => limparChavePix(cfg.pix_chave, cfg.pix_tipo),
+    [cfg.pix_chave, cfg.pix_tipo]
+  );
 
   const salvar = (e: React.FormEvent) => {
     e.preventDefault();
@@ -492,6 +509,28 @@ function SecaoPix({ inicial }: { inicial: ConfiguracoesBase }) {
     });
   };
 
+  const testarBotaoPix = () => {
+    setStatus(null);
+    if (telefoneTeste.replace(/\D/g, "").length < 10) {
+      setStatus({ tipo: "aviso", texto: "Preencha “Meu número para testes” no topo da página." });
+      return;
+    }
+    startTestePix(async () => {
+      const r = await enviarTesteBotaoPix({
+        telefone: telefoneTeste,
+        pix_chave: cfg.pix_chave,
+        pix_tipo: cfg.pix_tipo,
+        pix_titular: cfg.pix_titular,
+        empresa_nome: cfg.empresa_nome,
+      });
+      setStatus(
+        r.ok
+          ? { tipo: "ok", texto: "Botão Pix enviado para o seu WhatsApp! Confira se o botão “Copiar chave Pix” apareceu." }
+          : { tipo: "erro", texto: r.erro || "Falha ao enviar o botão Pix." }
+      );
+    });
+  };
+
   const campo =
     "w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500";
 
@@ -504,24 +543,45 @@ function SecaoPix({ inicial }: { inicial: ConfiguracoesBase }) {
       <p className="text-[11px] text-slate-500">
         Estes dados alimentam as variáveis <code className="font-mono">{"{pix_chave}"}</code>,{" "}
         <code className="font-mono">{"{pix_titular}"}</code> e <code className="font-mono">{"{empresa}"}</code> em todas as
-        mensagens desta base.
+        mensagens desta base, além do botão nativo de copiar Pix no WhatsApp.
       </p>
 
       {!cfg.pix_chave.trim() && (
         <p className="text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex gap-1.5">
           <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-px" />
-          Chave Pix não cadastrada: o rodapé de pagamento NÃO será enviado nas cobranças.
+          Chave Pix não cadastrada: o rodapé de pagamento e o botão Pix NÃO serão enviados nas cobranças.
         </p>
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
-          <label className="font-bold text-slate-700 text-xs block mb-1">Chave Pix e banco</label>
+          <label className="font-bold text-slate-700 text-xs block mb-1">Tipo da chave Pix</label>
+          <select
+            className={campo}
+            value={cfg.pix_tipo}
+            onChange={(e) => setCfg({ ...cfg, pix_tipo: e.target.value as PixTipoChave })}
+          >
+            {PIX_TIPOS.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="font-bold text-slate-700 text-xs block mb-1">Chave Pix</label>
           <input
             className={campo}
             value={cfg.pix_chave}
-            onChange={(e) => setCfg({ ...cfg, pix_chave: e.target.value })}
-            placeholder="Ex.: 11999998888 (Banco)"
+            onChange={(e) => {
+              const v = e.target.value;
+              setCfg((prev) => ({
+                ...prev,
+                pix_chave: v,
+                pix_tipo: v.trim() ? detectarTipoChavePix(v) : prev.pix_tipo,
+              }));
+            }}
+            placeholder="Ex.: 54.240.232/0001-46"
             maxLength={200}
           />
         </div>
@@ -531,7 +591,17 @@ function SecaoPix({ inicial }: { inicial: ConfiguracoesBase }) {
             className={campo}
             value={cfg.pix_titular}
             onChange={(e) => setCfg({ ...cfg, pix_titular: e.target.value })}
-            placeholder="Ex.: João da Silva"
+            placeholder="Ex.: Fh soluções empresariais"
+            maxLength={200}
+          />
+        </div>
+        <div>
+          <label className="font-bold text-slate-700 text-xs block mb-1">Banco (opcional)</label>
+          <input
+            className={campo}
+            value={cfg.pix_banco}
+            onChange={(e) => setCfg({ ...cfg, pix_banco: e.target.value })}
+            placeholder="Ex.: Banco Santander"
             maxLength={200}
           />
         </div>
@@ -541,22 +611,90 @@ function SecaoPix({ inicial }: { inicial: ConfiguracoesBase }) {
             className={campo}
             value={cfg.empresa_nome}
             onChange={(e) => setCfg({ ...cfg, empresa_nome: e.target.value })}
-            placeholder="Ex.: Soluções Financeiras"
+            placeholder="Ex.: Fh soluções empresariais"
             maxLength={200}
           />
         </div>
       </div>
 
+      {/* Toggle do botão nativo de copiar Pix */}
+      <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-extrabold text-slate-800">
+              Enviar botão nativo “Copiar chave Pix” nas cobranças
+            </p>
+            <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+              Logo após a mensagem de cobrança, o WhatsApp envia o cartão com o botão de copiar a chave Pix (sem valor fixo). Você pode ligar ou desligar quando quiser.
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={cfg.pix_enviar_botao}
+            onClick={() => setCfg({ ...cfg, pix_enviar_botao: !cfg.pix_enviar_botao })}
+            className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors cursor-pointer ${
+              cfg.pix_enviar_botao ? "bg-emerald-600" : "bg-slate-300"
+            }`}
+            title={cfg.pix_enviar_botao ? "Ligado" : "Desligado"}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                cfg.pix_enviar_botao ? "translate-x-6" : "translate-x-1"
+              }`}
+            />
+          </button>
+        </div>
+
+        {cfg.pix_chave.trim() && !chaveLimpa && (
+          <p className="text-[11px] font-semibold text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2 flex gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-px" />
+            A chave informada não bate com o tipo <strong>{cfg.pix_tipo}</strong>. Ajuste a chave ou o tipo acima para habilitar o botão Pix.
+          </p>
+        )}
+
+        {chaveLimpa && (
+          <div className="bg-[#e7f5dc] border border-emerald-200 rounded-2xl rounded-tl-sm p-3 max-w-xs shadow-sm space-y-2">
+            <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider text-emerald-800">
+              <span>Pix · {chaveLimpa.keyType}</span>
+              {cfg.pix_banco.trim() && <span className="font-semibold normal-case text-emerald-700">{cfg.pix_banco}</span>}
+            </div>
+            <div className="text-xs text-slate-800 leading-snug">
+              <p className="font-bold truncate">{cfg.pix_titular.trim() || cfg.empresa_nome.trim() || "Pix"}</p>
+              <p className="font-mono text-[11px] text-slate-600 mt-0.5">
+                {formatarChavePixExibicao(chaveLimpa.key, chaveLimpa.keyType)}
+              </p>
+            </div>
+            <div className="pt-2 border-t border-emerald-200/80 flex items-center justify-center gap-1.5 text-xs font-bold text-emerald-700">
+              <Copy className="w-3.5 h-3.5" />
+              <span>Copiar chave Pix</span>
+            </div>
+          </div>
+        )}
+      </div>
+
       <StatusLinha status={status} />
 
-      <button
-        type="submit"
-        disabled={isPending}
-        className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
-      >
-        {isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-        Salvar dados
-      </button>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="submit"
+          disabled={isPending}
+          className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+        >
+          {isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+          Salvar dados
+        </button>
+
+        <button
+          type="button"
+          onClick={testarBotaoPix}
+          disabled={testandoPix || !chaveLimpa}
+          className="flex items-center gap-1.5 bg-white hover:bg-emerald-50 disabled:opacity-40 text-emerald-700 border border-emerald-300 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer"
+        >
+          {testandoPix ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+          Testar botão Pix
+        </button>
+      </div>
     </form>
   );
 }
@@ -714,7 +852,7 @@ export default function EditorMensagens({
       )}
 
       {secao === "respostas" && <SecaoRespostas inicial={respostas} />}
-      {secao === "pix" && <SecaoPix inicial={config} />}
+      {secao === "pix" && <SecaoPix inicial={config} telefoneTeste={telefoneTeste} />}
     </div>
   );
 }

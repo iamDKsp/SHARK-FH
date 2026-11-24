@@ -8,9 +8,11 @@ import {
   type ConfiguracoesBase,
   type ContextoMensagem,
 } from "@/lib/mensagens/catalogo";
+import { detectarTipoChavePix, ehTipoChavePix, limparChavePix, type PixTipoChave } from "@/lib/pix";
 import { renderizar, validarTexto } from "@/lib/mensagens/render";
 import {
   carregarConfiguracoes,
+  enviarBotaoPix,
   enviarTextoLivre,
   removerBlocoRenovacao,
   resolverTemplate,
@@ -100,18 +102,40 @@ async function upsertConfig(chave: string, valor: string) {
 export async function salvarConfiguracoes(dados: ConfiguracoesBase): Promise<ResultadoAcao> {
   const pixChave = String(dados.pix_chave ?? "").trim();
   const pixTitular = String(dados.pix_titular ?? "").trim();
+  const pixBanco = String(dados.pix_banco ?? "").trim();
+  const pixTipo: PixTipoChave = ehTipoChavePix(dados.pix_tipo)
+    ? dados.pix_tipo
+    : detectarTipoChavePix(pixChave);
+  const pixEnviarBotao = Boolean(dados.pix_enviar_botao);
   const empresa = String(dados.empresa_nome ?? "").trim();
-  if (pixChave.length > 200 || pixTitular.length > 200 || empresa.length > 200) {
+
+  if (
+    pixChave.length > 200 ||
+    pixTitular.length > 200 ||
+    pixBanco.length > 200 ||
+    empresa.length > 200
+  ) {
     return { ok: false, erro: "Os campos aceitam no máximo 200 caracteres." };
   }
+
+  if (pixEnviarBotao && pixChave && !limparChavePix(pixChave, pixTipo)) {
+    return {
+      ok: false,
+      erro: `A chave Pix informada não parece válida para o tipo ${pixTipo}. Confira a chave ou troque o tipo.`,
+    };
+  }
+
   try {
     await upsertConfig("pix_chave", pixChave);
+    await upsertConfig("pix_tipo", pixTipo);
     await upsertConfig("pix_titular", pixTitular);
+    await upsertConfig("pix_banco", pixBanco);
+    await upsertConfig("pix_enviar_botao", pixEnviarBotao ? "true" : "false");
     await upsertConfig("empresa_nome", empresa);
     revalidatePath("/configuracoes/mensagens");
     revalidatePath("/cobrancas");
     const avisos: string[] = [];
-    if (!pixChave) avisos.push("Sem chave Pix, o rodapé de pagamento não será enviado nas cobranças.");
+    if (!pixChave) avisos.push("Sem chave Pix, o rodapé de pagamento e o botão Pix não serão enviados nas cobranças.");
     return { ok: true, avisos };
   } catch (err: any) {
     console.error("[mensagens] salvarConfiguracoes:", err?.message);
@@ -157,16 +181,21 @@ export async function enviarTeste(chave: string, texto: string, telefone: string
   if (erro) return { ok: false, erro };
 
   const cfg = await carregarConfiguracoes();
+  const pixChaveFmt =
+    cfg.pix_chave && cfg.pix_banco && !cfg.pix_chave.toLowerCase().includes(cfg.pix_banco.toLowerCase())
+      ? `${cfg.pix_chave} (${cfg.pix_banco})`
+      : cfg.pix_chave;
   const contexto: ContextoMensagem = {
     ...CONTEXTO_EXEMPLO,
     // Se a base já tem Pix/empresa cadastrados, o teste usa os dados reais.
-    ...(cfg.pix_chave ? { pix_chave: cfg.pix_chave } : {}),
+    ...(pixChaveFmt ? { pix_chave: pixChaveFmt } : {}),
     ...(cfg.pix_titular ? { pix_titular: cfg.pix_titular } : {}),
     ...(cfg.empresa_nome ? { empresa: cfg.empresa_nome } : {}),
   };
 
   let corpo = renderizar(texto, contexto).texto;
-  if (chave.startsWith("cobranca.") && chave !== "cobranca.rodape") {
+  const ehCobranca = chave.startsWith("cobranca.") && chave !== "cobranca.rodape";
+  if (ehCobranca) {
     const rodape = await resolverTemplate("cobranca.rodape");
     if (rodape.ativo && cfg.pix_chave) {
       const textoRodape = chave.endsWith(".parcelado")
@@ -181,7 +210,56 @@ export async function enviarTeste(chave: string, texto: string, telefone: string
     contexto: {},
     chave: `teste.${chave}`,
   });
+
+  if (r.enviado && ehCobranca && cfg.pix_enviar_botao && cfg.pix_chave) {
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const rPix = await enviarBotaoPix({
+      telefone: digitos,
+      chaveLog: "teste.pix.botao",
+    });
+    if (!rPix.enviado) {
+      return {
+        ok: true,
+        avisos: [`Texto enviado, mas o botão Pix falhou: ${rPix.erro || "verifique o servidor WhatsApp"}.`],
+      };
+    }
+  }
+
   return r.enviado ? { ok: true } : { ok: false, erro: r.erro || "Falha ao enviar o teste." };
+}
+
+/** Envia somente o botão nativo de copiar Pix para teste no número informado. */
+export async function enviarTesteBotaoPix(dados: {
+  telefone: string;
+  pix_chave: string;
+  pix_tipo: PixTipoChave;
+  pix_titular: string;
+  empresa_nome?: string;
+}): Promise<ResultadoAcao> {
+  const digitos = (dados.telefone || "").replace(/\D/g, "");
+  if (digitos.length < 10) {
+    return { ok: false, erro: "Informe um número de WhatsApp válido com DDD no topo da página." };
+  }
+
+  const pixChave = String(dados.pix_chave ?? "").trim();
+  const pixTipo: PixTipoChave = ehTipoChavePix(dados.pix_tipo)
+    ? dados.pix_tipo
+    : detectarTipoChavePix(pixChave);
+  if (!limparChavePix(pixChave, pixTipo)) {
+    return { ok: false, erro: `A chave Pix informada não é válida para o tipo ${pixTipo}.` };
+  }
+
+  const r = await enviarBotaoPix({
+    telefone: digitos,
+    chaveLog: "teste.pix.botao",
+    override: {
+      pix_chave: pixChave,
+      pix_tipo: pixTipo,
+      pix_titular: String(dados.pix_titular ?? "").trim(),
+      empresa_nome: String(dados.empresa_nome ?? "").trim(),
+    },
+  });
+  return r.enviado ? { ok: true } : { ok: false, erro: r.erro || "Falha ao enviar o botão Pix." };
 }
 
 export interface DadosImportacao {

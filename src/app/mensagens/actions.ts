@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/db";
 import {
   carregarRespostasRapidas,
+  enviarBotaoPix,
   enviarTextoLivre,
   montarContexto,
   renderizarEvento,
@@ -58,4 +59,23 @@ export async function enviarMensagemManual(dados: {
     chave: "manual",
   });
   return r.enviado ? { ok: true, texto: r.texto } : { ok: false, erro: r.erro || "Falha ao enviar.", texto: r.texto };
+}
+
+/**
+ * Envia somente o botão nativo de copiar chave Pix pelo WhatsApp para um cliente.
+ */
+export async function enviarBotaoPixCliente(dados: {
+  clienteId: string;
+  parcelaId?: string;
+}): Promise<ResultadoEnvioManual> {
+  const cliente = await prisma.cliente.findUnique({ where: { id: dados.clienteId } });
+  if (!cliente) return { ok: false, erro: "Cliente não encontrado." };
+
+  const r = await enviarBotaoPix({
+    telefone: cliente.telefone,
+    clienteId: cliente.id,
+    parcelaId: dados.parcelaId,
+    chaveLog: "pix.botao.manual",
+  });
+  return r.enviado ? { ok: true, texto: r.texto } : { ok: false, erro: r.erro || "Falha ao enviar botão Pix." };
 }

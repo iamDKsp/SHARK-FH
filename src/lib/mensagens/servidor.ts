@@ -11,7 +11,8 @@
  */
 import { prisma } from "@/lib/db";
 import { hojeEmBrasilia } from "@/lib/dateUtils";
-import { sendWhatsappMessage } from "@/lib/whatsapp";
+import { detectarTipoChavePix, ehTipoChavePix, formatarChavePixExibicao, limparChavePix } from "@/lib/pix";
+import { sendWhatsappMessage, sendWhatsappPixButton, type PixButtonPayload } from "@/lib/whatsapp";
 import {
   CONFIG_PADRAO,
   RESPOSTAS_RAPIDAS_PADRAO,
@@ -25,17 +26,58 @@ import { formatarBRL, formatarDataUTC, primeiroNome, renderizar } from "./render
 // Configurações da base
 // ─────────────────────────────────────────────────────────────────────────────
 
+function formatarPixTexto(cfg: ConfiguracoesBase): string {
+  const chave = cfg.pix_chave.trim();
+  if (!chave) return "";
+  const banco = cfg.pix_banco.trim();
+  if (banco && !chave.toLowerCase().includes(banco.toLowerCase())) {
+    return `${chave} (${banco})`;
+  }
+  return chave;
+}
+
+export function montarPayloadBotaoPix(
+  cfg: Pick<ConfiguracoesBase, "pix_chave" | "pix_tipo" | "pix_titular" | "empresa_nome">
+): PixButtonPayload | null {
+  const limpa = limparChavePix(cfg.pix_chave, cfg.pix_tipo);
+  if (!limpa) return null;
+  return {
+    key: limpa.key,
+    keyType: limpa.keyType,
+    merchantName: (cfg.pix_titular || cfg.empresa_nome || "Pix").trim(),
+  };
+}
+
 export async function carregarConfiguracoes(): Promise<ConfiguracoesBase> {
   const cfg: ConfiguracoesBase = { ...CONFIG_PADRAO };
   try {
     const linhas = await prisma.configuracao.findMany({
-      where: { chave: { in: ["pix_chave", "pix_titular", "empresa_nome"] } },
+      where: {
+        chave: {
+          in: ["pix_chave", "pix_tipo", "pix_titular", "pix_banco", "pix_enviar_botao", "empresa_nome"],
+        },
+      },
     });
-    for (const l of linhas) {
-      if (l.chave === "pix_chave") cfg.pix_chave = l.valor;
-      else if (l.chave === "pix_titular") cfg.pix_titular = l.valor;
-      else if (l.chave === "empresa_nome" && l.valor.trim()) cfg.empresa_nome = l.valor;
+    const mapa = new Map(linhas.map((l) => [l.chave, l.valor]));
+
+    if (mapa.has("pix_chave")) cfg.pix_chave = mapa.get("pix_chave") ?? "";
+    if (mapa.has("pix_titular")) cfg.pix_titular = mapa.get("pix_titular") ?? "";
+    if (mapa.has("pix_banco")) {
+      cfg.pix_banco = mapa.get("pix_banco") ?? "";
+    } else if (mapa.has("pix_chave") && cfg.pix_chave.trim() !== CONFIG_PADRAO.pix_chave) {
+      // Base já tinha chave própria cadastrada antes do campo separado de banco
+      cfg.pix_banco = "";
     }
+    if (mapa.has("pix_tipo") && ehTipoChavePix(mapa.get("pix_tipo"))) {
+      cfg.pix_tipo = mapa.get("pix_tipo") as ConfiguracoesBase["pix_tipo"];
+    } else if (cfg.pix_chave.trim()) {
+      cfg.pix_tipo = detectarTipoChavePix(cfg.pix_chave);
+    }
+    if (mapa.has("pix_enviar_botao")) {
+      cfg.pix_enviar_botao = mapa.get("pix_enviar_botao") === "true";
+    }
+    const emp = mapa.get("empresa_nome");
+    if (emp && emp.trim()) cfg.empresa_nome = emp;
   } catch (err) {
     console.error("[mensagens] Falha ao ler configurações, usando padrão:", (err as Error)?.message);
   }
@@ -170,7 +212,7 @@ export async function montarContexto(opcoes: OpcoesContexto): Promise<ContextoMe
     emprestimo?.cliente ?? (clienteId ? await prisma.cliente.findUnique({ where: { id: clienteId } }) : null);
 
   const ctx: ContextoMensagem = {
-    pix_chave: cfg.pix_chave,
+    pix_chave: formatarPixTexto(cfg),
     pix_titular: cfg.pix_titular,
     empresa: cfg.empresa_nome,
   };
@@ -329,7 +371,7 @@ export function contextoCobranca(d: DadosCobranca, cfg: ConfiguracoesBase): Cont
     valor_renovacao: permiteRenovacao ? formatarBRL(d.valorEmprestado * (d.taxaJuros / 100)) : "",
     dias_atraso: String(Math.max(0, dias)),
     saldo_restante: formatarBRL(d.saldoRestante),
-    pix_chave: cfg.pix_chave,
+    pix_chave: formatarPixTexto(cfg),
     pix_titular: cfg.pix_titular,
     empresa: cfg.empresa_nome,
   };
@@ -373,11 +415,72 @@ export async function enviarPorEvento(chave: string, opcoes: OpcoesEnvio): Promi
       status: res.success ? "enviado" : "falha",
       erro: res.error,
     });
+
+    // Nas cobranças, envia também o botão nativo de copiar Pix se estiver ativado.
+    // Falha no botão nunca derruba o envio da cobrança principal.
+    if (res.success && opcoes.anexarRodape) {
+      try {
+        const cfg = await carregarConfiguracoes();
+        if (cfg.pix_enviar_botao) {
+          const payload = montarPayloadBotaoPix(cfg);
+          if (payload) {
+            await new Promise((resolve) => setTimeout(resolve, 600));
+            const resPix = await sendWhatsappPixButton(telefone, payload);
+            await registrarLog({
+              chave: "pix.botao",
+              telefone,
+              clienteId,
+              parcelaId,
+              texto: `[Botão Pix ${payload.keyType}] ${formatarChavePixExibicao(payload.key, payload.keyType)} · ${payload.merchantName}`,
+              status: resPix.success ? "enviado" : "falha",
+              erro: resPix.error,
+            });
+          }
+        }
+      } catch (pixErr: any) {
+        console.warn("[mensagens] Falha ao enviar botão Pix pós-cobrança:", pixErr?.message);
+      }
+    }
+
     return { enviado: res.success, erro: res.error, texto: r.texto };
   } catch (err: any) {
     const erro = err?.message || "Erro ao disparar WhatsApp";
     console.error(`[mensagens] ${chave}:`, erro);
     return { enviado: false, erro };
+  }
+}
+
+/** Envia apenas o botão nativo de copiar chave Pix no WhatsApp. */
+export async function enviarBotaoPix(opcoes: {
+  telefone: string;
+  clienteId?: string;
+  parcelaId?: string;
+  chaveLog?: string;
+  override?: Pick<ConfiguracoesBase, "pix_chave" | "pix_tipo" | "pix_titular" | "empresa_nome">;
+}): Promise<ResultadoEnvio> {
+  const chave = opcoes.chaveLog ?? "pix.botao";
+  try {
+    if (!opcoes.telefone) return { enviado: false, erro: "Cliente sem telefone." };
+    const cfg = opcoes.override ?? (await carregarConfiguracoes());
+    const payload = montarPayloadBotaoPix(cfg);
+    if (!payload) {
+      return { enviado: false, erro: "Chave Pix não configurada ou inválida para o tipo selecionado." };
+    }
+
+    const res = await sendWhatsappPixButton(opcoes.telefone, payload);
+    const resumo = `[Botão Pix ${payload.keyType}] ${formatarChavePixExibicao(payload.key, payload.keyType)} · ${payload.merchantName}`;
+    await registrarLog({
+      chave,
+      telefone: opcoes.telefone,
+      clienteId: opcoes.clienteId,
+      parcelaId: opcoes.parcelaId,
+      texto: resumo,
+      status: res.success ? "enviado" : "falha",
+      erro: res.error,
+    });
+    return { enviado: res.success, erro: res.error, texto: resumo };
+  } catch (err: any) {
+    return { enviado: false, erro: err?.message || "Erro ao enviar botão Pix no WhatsApp." };
   }
 }
 
