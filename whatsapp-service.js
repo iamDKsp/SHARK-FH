@@ -4,6 +4,8 @@ const {
   DisconnectReason,
   makeCacheableSignalKeyStore,
   generateWAMessageFromContent,
+  generateMessageIDV2,
+  isJidGroup,
   proto,
 } = require("@whiskeysockets/baileys");
 const http = require("http");
@@ -215,8 +217,6 @@ async function sendPixButtonMessage(jid, pix) {
   const { key, keyType, merchantName, bodyText, footerText } = normalizePixPayload(pix);
 
   const buttonParams = {
-    currency: "BRL",
-    total_amount: { value: 0, offset: 100 },
     payment_settings: [
       {
         type: "pix_static_code",
@@ -229,71 +229,55 @@ async function sendPixButtonMessage(jid, pix) {
     ],
   };
 
-  const interactivePayload = {
-    nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
+  const interactiveMessage = {
+    nativeFlowMessage: {
       buttons: [
         {
           name: "payment_info",
           buttonParamsJson: JSON.stringify(buttonParams),
         },
       ],
-    }),
+    },
   };
 
   if (bodyText) {
-    interactivePayload.body = proto.Message.InteractiveMessage.Body.create({
-      text: bodyText,
-    });
+    interactiveMessage.body = { text: bodyText };
   }
   if (footerText) {
-    interactivePayload.footer = proto.Message.InteractiveMessage.Footer.create({
-      text: footerText,
-    });
+    interactiveMessage.footer = { text: footerText };
   }
 
+  const userJid = sock?.authState?.creds?.me?.id || sock?.user?.id;
   const fullMsg = generateWAMessageFromContent(
     jid,
+    { interactiveMessage },
     {
-      viewOnceMessage: {
-        message: {
-          messageContextInfo: {
-            deviceListMetadata: {},
-            deviceListMetadataVersion: 2,
-          },
-          interactiveMessage: proto.Message.InteractiveMessage.create(interactivePayload),
-        },
-      },
-    },
-    { userJid: sock?.user?.id }
+      userJid,
+      messageId: generateMessageIDV2(userJid),
+      timestamp: new Date(),
+    }
   );
 
   const additionalNodes = [
     {
       tag: "biz",
-      attrs: {},
-      content: [
-        {
-          tag: "interactive",
-          attrs: { type: "native_flow", v: "1" },
-          content: [
-            {
-              tag: "native_flow",
-              attrs: { v: "2", name: "payment_info" },
-            },
-          ],
-        },
-      ],
+      attrs: {
+        native_flow_name: "payment_info",
+      },
     },
   ];
 
-  if (!jid.endsWith("@g.us")) {
+  if (!isJidGroup(jid)) {
     additionalNodes.push({
       tag: "bot",
       attrs: { biz_bot: "1" },
     });
   }
 
-  console.log(`[WhatsApp] Sending Pix button (${keyType}) to: ${jid}`);
+  console.log(`[WhatsApp] Sending Pix button (${keyType}) to: ${jid}`, {
+    msgId: fullMsg.key.id,
+    nodes: additionalNodes,
+  });
   await sock.relayMessage(jid, fullMsg.message, {
     messageId: fullMsg.key.id,
     additionalNodes,
