@@ -41,12 +41,15 @@ export async function POST(req: Request) {
       body: JSON.stringify({ ...body, messages })
     });
     
-    const data = await res.json();
+    const data = await res.json().catch(() => ({
+      error: `Resposta inválida do servidor do WhatsApp (HTTP ${res.status}).`,
+    }));
     if (!res.ok) {
       return NextResponse.json(data, { status: res.status });
     }
     return NextResponse.json(data);
   } catch (err: any) {
+    console.error("[api/whatsapp/send] Erro ao encaminhar envio:", err?.message || err);
     return NextResponse.json({ error: "Falha de conexão com o servidor do WhatsApp." }, { status: 500 });
   }
 }

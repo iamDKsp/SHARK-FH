@@ -821,6 +821,10 @@ export default function EmprestimoDetalhesView({
   };
 
   const handleEnviarPdfWa = async () => {
+    if (!emprestimo.cliente.telefone || !emprestimo.cliente.telefone.trim()) {
+      alert("Este cliente não possui telefone cadastrado para envio via WhatsApp.");
+      return;
+    }
     if (!confirm(`Enviar o cronograma em PDF diretamente para o WhatsApp de ${emprestimo.cliente.nome}?`)) return;
     setIsSendingPdfWa(true);
     try {
@@ -844,7 +848,14 @@ export default function EmprestimoDetalhesView({
         })),
       });
 
-      const fileName = `cronograma-${emprestimo.cliente.nome.toLowerCase().replace(/[^a-z0-9]/g, "-")}.pdf`;
+      const clienteSlug = (emprestimo.cliente.nome || "cliente")
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9]/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "");
+      const fileName = `cronograma-${clienteSlug || "cliente"}.pdf`;
       const legenda = await legendaCronograma(emprestimo.id);
       const res = await fetch("/api/whatsapp/send", {
         method: "POST",

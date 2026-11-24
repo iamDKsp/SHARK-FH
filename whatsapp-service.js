@@ -237,6 +237,7 @@ const server = http.createServer(async (req, res) => {
             const docBuffer = Buffer.isBuffer(item.document)
               ? item.document
               : Buffer.from(item.document, "base64");
+            console.log(`Sending document (${item.fileName || "cronograma.pdf"}, ${Math.round(docBuffer.length / 1024)}KB) to: ${jid}`);
             await sock.sendMessage(jid, {
               document: docBuffer,
               mimetype: item.mimetype || "application/pdf",
@@ -255,6 +256,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true, logs }));
       } catch (err) {
+        console.error("[WhatsApp] Erro em /send:", err?.message || err);
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: err.message }));
       }

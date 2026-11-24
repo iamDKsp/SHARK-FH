@@ -1028,9 +1028,13 @@ export function baixarEmprestimosEmMassaPdf(
   doc.save(nomeArquivo);
 }
 
-export function obterEmprestimosEmMassaPdfBase64(data: RelatorioEmprestimosPdfData): string {
-  const doc = gerarEmprestimosEmMassaPdf(data);
+export function obterPdfBase64DeDocumento(doc: jsPDF): string {
   const arrayBuffer = doc.output("arraybuffer");
   return arrayBufferToBase64(arrayBuffer);
+}
+
+export function obterEmprestimosEmMassaPdfBase64(data: RelatorioEmprestimosPdfData): string {
+  const doc = gerarEmprestimosEmMassaPdf(data);
+  return obterPdfBase64DeDocumento(doc);
 }
 

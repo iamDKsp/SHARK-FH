@@ -17,8 +17,9 @@ import { isNetworkError, useOffline } from "@/components/offline/OfflineProvider
 import { legendaCronograma } from "@/app/mensagens/actions";
 import {
   baixarEmprestimosEmMassaPdf,
-  obterEmprestimosEmMassaPdfBase64,
+  gerarEmprestimosEmMassaPdf,
   obterNomeArquivoEmprestimosPdf,
+  obterPdfBase64DeDocumento,
   type ParcelaPdfItem,
 } from "@/lib/cronogramaPdf";
 import { hojeEmBrasilia } from "@/lib/dateUtils";
@@ -100,7 +101,7 @@ export default function EmprestimosClienteCard({
   const [isPending, startTransition] = useTransition();
 
   // Estados do fluxo de PDF em massa
-  const [isGeneratingPdf, setIsGeneratingPdf] = useState<"baixar" | "enviar" | null>(null);
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState<"baixar" | "enviar" | "baixar_e_enviar" | null>(null);
   const [pdfFeedback, setPdfFeedback] = useState<{
     tipo: "sucesso" | "aviso" | "erro";
     texto: string;
@@ -283,11 +284,60 @@ export default function EmprestimosClienteCard({
     }
   };
 
-  const handleBaixarEEnviarPdf = async () => {
+  const enviarPdfViaWhatsapp = async (
+    pdfBase64: string,
+    nomeArquivo: string
+  ): Promise<{ ok: boolean; error?: string }> => {
+    let caption = `Olá ${clienteNome}, segue em anexo o demonstrativo detalhado dos seus ${itensSelecionados.length} empréstimos.`;
+    if (itensSelecionados.length === 1) {
+      try {
+        caption = await legendaCronograma(itensSelecionados[0].id);
+      } catch {
+        // Mantém a legenda padrão caso falhe
+      }
+    }
+
+    const res = await fetch("/api/whatsapp/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          {
+            phone: clienteTelefone,
+            document: pdfBase64,
+            mimetype: "application/pdf",
+            fileName: nomeArquivo,
+            caption,
+          },
+        ],
+      }),
+    });
+
+    if (res.ok) {
+      return { ok: true };
+    }
+
+    const d = await res.json().catch(() => ({}));
+    return {
+      ok: false,
+      error: d?.error || "Verifique se o WhatsApp está conectado.",
+    };
+  };
+
+  const handleSoEnviarPdf = async () => {
     if (itensSelecionados.length === 0) {
-      setErro("Selecione pelo menos um empréstimo para gerar e enviar o PDF.");
+      setErro("Selecione pelo menos um empréstimo para enviar o PDF.");
       return;
     }
+    if (!clienteTelefone || !clienteTelefone.trim()) {
+      setErro(null);
+      setPdfFeedback({
+        tipo: "aviso",
+        texto: "Este cliente não possui telefone cadastrado para envio via WhatsApp.",
+      });
+      return;
+    }
+
     setErro(null);
     setPdfFeedback(null);
     setIsGeneratingPdf("enviar");
@@ -295,12 +345,52 @@ export default function EmprestimosClienteCard({
     try {
       const payload = montarDadosPdf();
       const nomeArquivo = obterNomeArquivoEmprestimosPdf(clienteNome, itensSelecionados.length);
+      const doc = gerarEmprestimosEmMassaPdf(payload);
+      const pdfBase64 = obterPdfBase64DeDocumento(doc);
 
-      // 1. Baixar o PDF no dispositivo do usuário
-      baixarEmprestimosEmMassaPdf(payload, nomeArquivo);
+      const resultadoEnvio = await enviarPdfViaWhatsapp(pdfBase64, nomeArquivo);
 
-      // 2. Verificar se o cliente possui telefone cadastrado
+      if (resultadoEnvio.ok) {
+        setPdfFeedback({
+          tipo: "sucesso",
+          texto: `PDF enviado com sucesso para o WhatsApp de ${clienteNome}!`,
+        });
+      } else {
+        setPdfFeedback({
+          tipo: "erro",
+          texto: `Não foi possível enviar no WhatsApp: ${resultadoEnvio.error}`,
+        });
+      }
+    } catch (err) {
+      console.error("Erro ao enviar PDF em massa no WhatsApp:", err);
+      setPdfFeedback({
+        tipo: "erro",
+        texto: "Houve falha de conexão ao tentar enviar o PDF para o WhatsApp.",
+      });
+    } finally {
+      setIsGeneratingPdf(null);
+    }
+  };
+
+  const handleBaixarEEnviarPdf = async () => {
+    if (itensSelecionados.length === 0) {
+      setErro("Selecione pelo menos um empréstimo para gerar e enviar o PDF.");
+      return;
+    }
+    setErro(null);
+    setPdfFeedback(null);
+    setIsGeneratingPdf("baixar_e_enviar");
+
+    try {
+      const payload = montarDadosPdf();
+      const nomeArquivo = obterNomeArquivoEmprestimosPdf(clienteNome, itensSelecionados.length);
+
+      // Gera o PDF uma única vez para reutilizar no envio e no download
+      const doc = gerarEmprestimosEmMassaPdf(payload);
+
+      // 1. Verificar se o cliente possui telefone cadastrado
       if (!clienteTelefone || !clienteTelefone.trim()) {
+        doc.save(nomeArquivo);
         setPdfFeedback({
           tipo: "aviso",
           texto: "O PDF foi baixado no seu dispositivo, mas este cliente não possui telefone cadastrado para envio via WhatsApp.",
@@ -308,52 +398,39 @@ export default function EmprestimosClienteCard({
         return;
       }
 
-      // 3. Gerar Base64 do mesmo PDF e enviar via WhatsApp
-      const pdfBase64 = obterEmprestimosEmMassaPdfBase64(payload);
-      let caption = `Olá ${clienteNome}, segue em anexo o demonstrativo detalhado dos seus ${itensSelecionados.length} empréstimos.`;
-      if (itensSelecionados.length === 1) {
-        try {
-          caption = await legendaCronograma(itensSelecionados[0].id);
-        } catch {
-          // Mantém a legenda padrão caso falhe
-        }
+      // 2. Enviar PRIMEIRO via WhatsApp antes de acionar doc.save().
+      // No Safari/iOS, disparar download de blob: concorrentemente cancela o fetch HTTP/2 (499/ECONNRESET).
+      const pdfBase64 = obterPdfBase64DeDocumento(doc);
+      let resultadoEnvio: { ok: boolean; error?: string };
+      try {
+        resultadoEnvio = await enviarPdfViaWhatsapp(pdfBase64, nomeArquivo);
+      } catch (err) {
+        console.error("Erro ao enviar PDF em massa no WhatsApp:", err);
+        resultadoEnvio = {
+          ok: false,
+          error: "falha de conexão ao tentar enviar para o WhatsApp.",
+        };
       }
 
-      const res = await fetch("/api/whatsapp/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: [
-            {
-              phone: clienteTelefone,
-              document: pdfBase64,
-              mimetype: "application/pdf",
-              fileName: nomeArquivo,
-              caption,
-            },
-          ],
-        }),
-      });
+      // 3. Só acionar o download no dispositivo após a requisição de envio concluir
+      doc.save(nomeArquivo);
 
-      if (res.ok) {
+      if (resultadoEnvio.ok) {
         setPdfFeedback({
           tipo: "sucesso",
-          texto: `PDF baixado e enviado com sucesso para o WhatsApp de ${clienteNome}!`,
+          texto: `PDF enviado com sucesso para o WhatsApp de ${clienteNome} e baixado no seu dispositivo!`,
         });
       } else {
-        const d = await res.json().catch(() => ({}));
         setPdfFeedback({
           tipo: "aviso",
-          texto: `O PDF foi baixado no seu dispositivo, porém não foi possível enviar no WhatsApp: ${
-            d?.error || "Verifique se o WhatsApp está conectado."
-          }`,
+          texto: `O PDF foi baixado no seu dispositivo, porém não foi possível enviar no WhatsApp: ${resultadoEnvio.error}`,
         });
       }
     } catch (err) {
-      console.error("Erro ao baixar/enviar PDF em massa:", err);
+      console.error("Erro ao gerar/enviar PDF em massa:", err);
       setPdfFeedback({
-        tipo: "aviso",
-        texto: "O PDF foi baixado, mas houve falha de conexão ao tentar enviar para o WhatsApp.",
+        tipo: "erro",
+        texto: "Não foi possível gerar o PDF dos empréstimos selecionados.",
       });
     } finally {
       setIsGeneratingPdf(null);
@@ -831,13 +908,53 @@ export default function EmprestimosClienteCard({
                           : "bg-rose-50 text-rose-800 border border-rose-200"
                       }`}
                     >
-                      <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                      {pdfFeedback.tipo === "sucesso" ? (
+                        <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                      ) : (
+                        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      )}
                       <span>{pdfFeedback.texto}</span>
                     </div>
                   )}
 
-                  {/* Duas opções de ação: Só baixar OU Baixar e enviar para o cliente */}
+                  {/* Opções de ação: Só enviar no WhatsApp, Baixar e enviar, ou Só baixar */}
                   <div className="space-y-2.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleSoEnviarPdf}
+                      disabled={itensSelecionados.length === 0 || !!isGeneratingPdf}
+                      className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                    >
+                      {isGeneratingPdf === "enviar" ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Send className="w-4 h-4" />
+                      )}
+                      <span>
+                        {isGeneratingPdf === "enviar"
+                          ? "Enviando PDF no WhatsApp..."
+                          : `Só enviar no WhatsApp (${itensSelecionados.length})`}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleBaixarEEnviarPdf}
+                      disabled={itensSelecionados.length === 0 || !!isGeneratingPdf}
+                      className="w-full py-3 px-4 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-sm font-bold disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                    >
+                      {isGeneratingPdf === "baixar_e_enviar" ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Send className="w-4 h-4" />
+                      )}
+                      <span>
+                        {isGeneratingPdf === "baixar_e_enviar"
+                          ? "Enviando e baixando PDF..."
+                          : `Baixar e enviar para o cliente (${itensSelecionados.length})`}
+                      </span>
+                    </button>
+
                     <button
                       type="button"
                       onClick={handleSoBaixarPdf}
@@ -853,24 +970,6 @@ export default function EmprestimosClienteCard({
                         {isGeneratingPdf === "baixar"
                           ? "Gerando PDF..."
                           : `Só baixar PDF (${itensSelecionados.length})`}
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={handleBaixarEEnviarPdf}
-                      disabled={itensSelecionados.length === 0 || !!isGeneratingPdf}
-                      className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors cursor-pointer"
-                    >
-                      {isGeneratingPdf === "enviar" ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Send className="w-4 h-4" />
-                      )}
-                      <span>
-                        {isGeneratingPdf === "enviar"
-                          ? "Baixando e enviando no WhatsApp..."
-                          : `Baixar e enviar para o cliente (${itensSelecionados.length})`}
                       </span>
                     </button>
                   </div>
