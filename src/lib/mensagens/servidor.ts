@@ -37,7 +37,7 @@ function formatarPixTexto(cfg: ConfiguracoesBase): string {
 }
 
 export function montarPayloadBotaoPix(
-  cfg: Pick<ConfiguracoesBase, "pix_chave" | "pix_tipo" | "pix_titular" | "empresa_nome">
+  cfg: Pick<ConfiguracoesBase, "pix_chave" | "pix_tipo" | "pix_titular" | "empresa_nome"> & { pix_banco?: string }
 ): PixButtonPayload | null {
   const limpa = limparChavePix(cfg.pix_chave, cfg.pix_tipo);
   if (!limpa) return null;
@@ -45,6 +45,7 @@ export function montarPayloadBotaoPix(
     key: limpa.key,
     keyType: limpa.keyType,
     merchantName: (cfg.pix_titular || cfg.empresa_nome || "Pix").trim(),
+    footer: cfg.pix_banco?.trim() || undefined,
   };
 }
 

@@ -213,36 +213,38 @@ function normalizePixPayload(pix) {
   return { key: cleanKey, keyType, merchantName, bodyText, footerText };
 }
 
+function formatPixKeyDisplay(key, keyType) {
+  if (keyType === "CNPJ" && key.length === 14) {
+    return key.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5");
+  }
+  if (keyType === "CPF" && key.length === 11) {
+    return key.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, "$1.$2.$3-$4");
+  }
+  return key;
+}
+
 async function sendPixButtonMessage(jid, pix) {
   const { key, keyType, merchantName, bodyText, footerText } = normalizePixPayload(pix);
 
-  const buttonParams = {
-    payment_settings: [
-      {
-        type: "pix_static_code",
-        pix_static_code: {
-          merchant_name: merchantName,
-          key,
-          key_type: keyType,
-        },
-      },
-    ],
-  };
+  const displayKey = formatPixKeyDisplay(key, keyType);
+  const defaultBody = `💳 *Chave Pix (${keyType})*\n${displayKey}\n${merchantName}`;
 
   const interactiveMessage = {
+    body: { text: bodyText || defaultBody },
     nativeFlowMessage: {
       buttons: [
         {
-          name: "payment_info",
-          buttonParamsJson: JSON.stringify(buttonParams),
+          name: "cta_copy",
+          buttonParamsJson: JSON.stringify({
+            display_text: "Copiar chave Pix",
+            id: "copiar_pix",
+            copy_code: key,
+          }),
         },
       ],
     },
   };
 
-  if (bodyText) {
-    interactiveMessage.body = { text: bodyText };
-  }
   if (footerText) {
     interactiveMessage.footer = { text: footerText };
   }
@@ -261,9 +263,19 @@ async function sendPixButtonMessage(jid, pix) {
   const additionalNodes = [
     {
       tag: "biz",
-      attrs: {
-        native_flow_name: "payment_info",
-      },
+      attrs: {},
+      content: [
+        {
+          tag: "interactive",
+          attrs: { type: "native_flow", v: "1" },
+          content: [
+            {
+              tag: "native_flow",
+              attrs: { v: "9", name: "mixed" },
+            },
+          ],
+        },
+      ],
     },
   ];
 
@@ -274,9 +286,9 @@ async function sendPixButtonMessage(jid, pix) {
     });
   }
 
-  console.log(`[WhatsApp] Sending Pix button (${keyType}) to: ${jid}`, {
+  console.log(`[WhatsApp] Sending Pix cta_copy button (${keyType}) to: ${jid}`, {
     msgId: fullMsg.key.id,
-    nodes: additionalNodes,
+    nodes: additionalNodes.map((n) => ({ tag: n.tag, attrs: n.attrs })),
   });
   await sock.relayMessage(jid, fullMsg.message, {
     messageId: fullMsg.key.id,
