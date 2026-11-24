@@ -9,6 +9,7 @@ const {
   proto,
 } = require("@whiskeysockets/baileys");
 const http = require("http");
+const crypto = require("crypto");
 const QRCode = require("qrcode");
 const path = require("path");
 const fs = require("fs");
@@ -114,6 +115,21 @@ async function connectToWhatsApp() {
   });
 
   sock.ev.on("creds.update", saveCreds);
+
+  // Captura apenas mensagens interativas (ex.: Pix nativo enviado pelo celular) para diagnóstico do protocolo
+  sock.ev.on("messages.upsert", ({ messages }) => {
+    for (const m of messages || []) {
+      const msg = m?.message;
+      if (!msg) continue;
+      const raw = JSON.stringify(msg);
+      if (raw.includes("interactiveMessage") || raw.includes("payment_info") || raw.includes("pix_static_code") || raw.includes("nativeFlowMessage")) {
+        console.log("[WhatsApp][DEBUG-INTERACTIVE]", JSON.stringify({
+          key: m.key,
+          message: msg,
+        }));
+      }
+    }
+  });
 }
 
 async function resolveWhatsAppJid(phone) {
@@ -230,8 +246,13 @@ async function sendPixButtonMessage(jid, pix) {
   const defaultBody = `💳 *Chave Pix (${keyType})*\n${displayKey}\n${merchantName}`;
 
   const interactiveMessage = {
+    header: {
+      title: "",
+      hasMediaAttachment: false,
+    },
     body: { text: bodyText || defaultBody },
     nativeFlowMessage: {
+      messageVersion: 1,
       buttons: [
         {
           name: "cta_copy",
@@ -252,7 +273,14 @@ async function sendPixButtonMessage(jid, pix) {
   const userJid = sock?.authState?.creds?.me?.id || sock?.user?.id;
   const fullMsg = generateWAMessageFromContent(
     jid,
-    { interactiveMessage },
+    {
+      messageContextInfo: {
+        deviceListMetadata: {},
+        deviceListMetadataVersion: 2,
+        messageSecret: crypto.randomBytes(32),
+      },
+      interactiveMessage,
+    },
     {
       userJid,
       messageId: generateMessageIDV2(userJid),
